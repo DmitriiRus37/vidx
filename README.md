@@ -1,5 +1,7 @@
 # vidx
 
+**English** · [Русский](README_RUS.md)
+
 Extract pictures and text from a video file or a YouTube (any yt-dlp) URL. It runs every local speech
 recognizer available on Apple Silicon, OCRs the screen, and merges everything into one transcript.
 Everything runs on the Mac; audio and video are never uploaded.
