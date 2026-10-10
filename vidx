@@ -1,0 +1,624 @@
+#!/usr/bin/env bash
+# vidx — extract pictures and text from a video file or a YouTube (any yt-dlp) URL.
+# The algorithm is described in README.md. Works with bash 5 and macOS /bin/bash 3.2.
+set -euo pipefail
+
+VIDX_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+LIB="$VIDX_DIR/lib"
+PY="$VIDX_DIR/.venv/bin/python"
+PY_GIGA="$VIDX_DIR/.venv-giga/bin/python"
+MODELS="$VIDX_DIR/models"
+ALL_ENGINES="whisper,parakeet,gigaam,turbo,apple,vosk"
+
+# Models and pinned dependencies. yt-dlp stays unpinned on purpose: YouTube breaks old versions.
+M_WHISPER=mlx-community/whisper-large-v3-mlx
+M_TURBO=mlx-community/whisper-large-v3-turbo
+M_PARAKEET=mlx-community/parakeet-tdt-0.6b-v3
+TOOLS=(mlx-whisper==0.4.3 parakeet-mlx==0.5.3 'yt-dlp[default]')
+HELPER_PKGS=(vosk==0.3.44 pillow==12.3.0 numpy==2.4.6)
+GIGA_PKGS=('gigaam[torch] @ git+https://github.com/salute-developers/GigaAM@7447938d791c4f3e643386ee22c33777004293a5'
+           torch==2.14.1 torchaudio==2.11.0 soundfile==0.14.0 numpy==2.4.6)
+OCR_LANGS=ru-RU,en-US
+# Python for the venvs: the code runs on 3.11+, GigaAM pins onnxruntime 1.23 which has no 3.14 build.
+PY_VERSION=${VIDX_PYTHON:-3.14}
+PY_GIGA_VERSION=${VIDX_PYTHON_GIGA:-3.13}
+
+usage() {
+  cat <<EOF
+vidx — extract pictures and text from a video file or a YouTube / any yt-dlp URL.
+Runs every local speech recognizer, OCRs the screen, and merges it all into one
+transcript. Everything runs on this Mac; nothing is uploaded.
+
+USAGE
+  vidx <file|url> [options]           extract (default command)
+  vidx find <out-dir> <regex> [src]   find the timecode of a phrase
+  vidx setup                          install tools and download models (~13 GB)
+  vidx help [run|find|setup]          this help, or help for one command
+
+QUICK START
+  vidx setup
+  vidx ~/Downloads/meeting.mp4 --meet -j 3
+  vidx "https://www.youtube.com/watch?v=VIDEO_ID" -g ${VIDX_DIR}/glossaries/example.txt
+  vidx find meeting_vidx-out 'kubernetes|helm'
+
+Run "vidx help run" for all options, outputs and the glossary format.
+EOF
+}
+
+usage_run() {
+  cat <<EOF
+vidx <file|url> [options]
+
+Pipeline. A step is skipped when its output exists and was made with the same
+options; -f redoes everything. Full description: ${VIDX_DIR}/README.md
+  1. source     local file (symlinked) or yt-dlp download + info, description,
+                thumbnail, manual and auto subtitles (YouTube)
+  2. audio      ffmpeg → audio.wav, 16 kHz mono
+  3. language   given with -l, or detected on 10 s clips (1 per minute)
+  4. speech     every engine that fits the language   ┐ one job queue,
+  5. pictures   frames → dedup → contact sheets → OCR ┘ -j N at a time
+  6. merge      aligned.md (all sources side by side) + transcript.md (merged)
+
+INPUT / OUTPUT
+  -o, --out DIR          output dir (default ./<file name | video id>_vidx-out).
+                         An existing non-empty dir not made by vidx is refused.
+  -l, --lang LIST        auto (default) | ru | en | ru,en | other whisper codes
+      --max-height N     YouTube download resolution cap (default 1080)
+      --sub-langs LIST   YouTube subtitle tracks (default: ru, en, --lang
+                         languages and the video's language, originals only)
+  -f, --force            redo every step, re-download the video and subtitles
+
+LANGUAGE
+  auto     whisper turbo detects 10 s clips, one per minute (5..30). A language
+           counts if it wins at least 2 clips and 20 % of them; no speech at
+           all → ru. Result cached in lang.txt.
+  ru       one language: whisper, turbo, Apple and Vosk are told it, GigaAM
+           runs (ru only), parakeet is never told a language.
+  ru,en    mixed speech (whole passages in each language). parakeet runs
+           first; its sentences, labelled Cyrillic vs Latin, split the audio
+           into regions (gaps get whisper's language detection) → regions.json.
+           whisper/turbo run once per language on that language's regions only,
+           GigaAM on the ru regions only; output files get @lang
+           (whisper-large-v3@en). Without this whisper would translate and
+           GigaAM would garble the other language. If parakeet fails, the run
+           continues with the first language only.
+           Russian with English jargon is NOT mixed: use -l ru.
+
+SPEECH
+  -e, --engines LIST     comma list of whisper,parakeet,gigaam,turbo,apple,vosk
+                         (default: all)
+  -j, --jobs N           run N jobs at once (default 1). Queue order:
+                           whisper (GPU) · vosk (CPU) · frames+OCR (CPU) ·
+                           gigaam · parakeet · apple · turbo
+                         so -j 2..3 keeps both GPU and CPU busy. Job output
+                         then goes to logs/<job>.log. RAM: whisper ~4 GB,
+                         vosk ru ~6 GB, others 1-3 GB; on a 16 GB Mac use -j 2
+  -g, --glossary FILE    domain terms, see GLOSSARY below
+      --cut A-B          drop a time range from transcript.md/.txt, e.g.
+                         --cut 36:30-50:00 (repeatable; [h:]m:s or seconds)
+
+  engine    model                        languages          runs on  speed*
+  whisper   whisper-large-v3 (MLX)       99, forced         GPU      ~4 min
+  parakeet  parakeet-tdt-0.6b-v3 (MLX)   25 European, any   GPU      ~1 min
+  gigaam    GigaAM-v3 e2e_rnnt (Sber)    ru only            GPU      ~3 min
+  turbo     whisper-large-v3-turbo       99, forced         GPU      ~2 min
+  apple     macOS SpeechTranscriber      en, de, fr… no ru  ANE      ~1 min
+  vosk      Kaldi vosk-model-ru / en-us  ru, en             CPU      ~60 min
+  youtube   manual + auto subtitles      as published       —        download
+  * rough, per hour of audio on Apple Silicon, one job at a time
+
+  Merge, per language region: base = first fitting source of GigaAM, whisper,
+  parakeet, turbo, apple, YouTube, Vosk. A base chunk is swapped for parakeet/
+  whisper text only if it looks like speech was skipped (<6 chars/s, the other
+  is >2x longer and >80 chars, <=25 chars/s).
+
+PICTURES
+      --scene X          ffmpeg scene-change threshold 0..1 (default 0.3)
+      --every SEC        also grab a frame after SEC s without one (default 10)
+      --dedup X          mean pixel diff on a 240x135 grey thumbnail below which
+                         a frame is a duplicate (default 6), unless >1 % of the
+                         pixels changed (small text on white slides)
+      --roi F            compare only the left fraction F of the frame (def. 1)
+      --crop             crop frames to the non-dark screen-share area
+      --meet             Google Meet recordings: --roi 0.75 --crop
+                         (ignores the participant tiles on the right)
+
+SKIP STEPS
+      --no-asr           no audio, language or speech: pictures + OCR (+ subs)
+      --no-frames  --no-ocr  --no-subs
+
+EXIT STATUS
+  0 all jobs succeeded · 3 some jobs failed (the rest is merged anyway; see the
+  summary and logs/) · 1 usage or setup error · 130 interrupted
+
+OUTPUT FILES (in the output dir)
+  transcript.md          merged transcript, 55 s paragraphs, YouTube chapters
+  transcript.txt         same, one timestamped line per chunk
+  aligned.md             every source + OCR side by side in 40 s windows
+  ocr.md                 on-screen text per frame
+  asr/<engine>[@lang].json           raw engine output with timestamps
+  subs/{manual,auto}.<lang>.json3    YouTube subtitles
+  frames/unique/HH-MM-SS.jpg         deduplicated frames
+  frames/sheets/sheet-NN.jpg         contact sheets, 20 frames each
+  frames/frames.json, ocr/ocr.jsonl  frame → timestamp, frame → text
+  lang.txt, regions.json             detected languages, language regions
+  logs/<job>.log                     per-job output when -j > 1
+  audio.wav, source.*, info.json, description.txt, thumbnail.jpg
+  .vidx/                             marker + option stamps of each step
+
+GLOSSARY (-g FILE), see ${VIDX_DIR}/glossaries/example.txt
+  prompt: <text>            whisper --initial-prompt (spelling of terms)
+  <regex> => <replacement>  applied to the merged transcript (Python re;
+                            <W> and <E> are Cyrillic-aware word boundaries)
+  # comment
+
+EXAMPLES
+  vidx call.mp4 --meet -g my-terms.txt --cut 36:30-50:00 -j 3
+  vidx call.mp4 -e gigaam,whisper,parakeet       # skip the slow ones
+  vidx talk.mp4 --no-asr --scene 0.2             # pictures + OCR only
+  vidx "https://youtu.be/VIDEO_ID" -l ru,en -j 2 # Russian + English talk
+EOF
+}
+
+usage_find() {
+  cat <<EOF
+vidx find <out-dir> <regex> [source]
+
+Prints "HH:MM:SS  source  text" for every segment of every engine (and every
+OCR line) matching the case-insensitive Python regex. Restrict to one source
+with its file stem from asr/, e.g. gigaam, whisper-large-v3, parakeet.
+
+  vidx find meeting_vidx-out 'kubernetes|helm'
+  vidx find meeting_vidx-out 'deadline' gigaam
+EOF
+}
+
+usage_setup() {
+  cat <<EOF
+vidx setup
+
+Installs or upgrades, then downloads every model once (re-running is safe):
+  brew        ffmpeg, deno (JS runtime yt-dlp needs for YouTube), uv
+  uv tool     ${TOOLS[*]}
+  .venv       Python ${PY_VERSION}: ${HELPER_PKGS[*]}
+  .venv-giga  Python ${PY_GIGA_VERSION}: GigaAM (pinned commit) + torch, torchaudio, soundfile
+              (GigaAM needs onnxruntime 1.23, which has no Python 3.14 build)
+Existing venvs are kept; delete .venv / .venv-giga to rebuild them. Override the
+versions with VIDX_PYTHON / VIDX_PYTHON_GIGA.
+  lib/        ocr, apple_asr (compiled from Swift)
+  models/     vosk-model-ru-0.42 (1.8 GB; the English one is fetched when needed)
+  HF cache    whisper-large-v3, whisper-large-v3-turbo, parakeet-tdt-0.6b-v3
+  ~/.cache/gigaam  GigaAM v3_e2e_rnnt
+EOF
+}
+
+# --- helpers ---------------------------------------------------------------------------------
+if [[ -t 2 ]]; then C_LOG=$'\033[1;36m' C_WARN=$'\033[1;33m' C_ERR=$'\033[1;31m' C_END=$'\033[0m'
+else C_LOG="" C_WARN="" C_ERR="" C_END=""; fi
+log()  { printf '%s==>%s %s\n' "$C_LOG" "$C_END" "$*" >&2; }
+warn() { printf '%swarn:%s %s\n' "$C_WARN" "$C_END" "$*" >&2; }
+die()  { printf '%serror:%s %s\n' "$C_ERR" "$C_END" "$*" >&2; exit 1; }
+need() { command -v "$1" >/dev/null || die "$1 not found — run: vidx setup"; }
+secs() { awk -F: '{ s = 0; for (i = 1; i <= NF; i++) s = s * 60 + $i; print s }' <<< "$1"; }  # [h:]m:s → s
+mlx_py() {  # run a script in mlx-whisper's own Python, hiding Hugging Face's "Fetching" noise
+  "$(uv tool dir)/mlx-whisper/bin/python" "$@" 2>&1 >&3 | { grep -v Fetching || true; } >&2
+} 3>&1
+
+# Ctrl-C / kill: stop every background job together with its children (engines ignore SIGINT
+# when started in the background), then exit.
+kill_tree() { local c; for c in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$c"; done; kill -TERM "$1" 2>/dev/null || true; }
+on_interrupt() { trap - INT TERM; local p; for p in $(jobs -p); do kill_tree "$p"; done; warn "interrupted"; exit 130; }
+trap on_interrupt INT TERM
+
+build_swift() {  # name → lib/<name>, rebuilt when the .swift source is newer
+  [[ -x $LIB/$1 && $LIB/$1 -nt $LIB/$1.swift ]] && return 0
+  command -v swiftc >/dev/null || { warn "swiftc not found (xcode-select --install): $1 unavailable"; return 1; }
+  swiftc -O -o "$LIB/$1" "$LIB/$1.swift"
+}
+
+vosk_model() {  # language → model dir name
+  case "$1" in ru) echo vosk-model-ru-0.42 ;; en) echo vosk-model-en-us-0.22 ;; *) echo "" ;; esac
+}
+
+fetch_vosk() {  # download + unzip into a temp dir, then move into place, so a half-done model never counts
+  local name tmp
+  name=$(vosk_model "$1"); [[ -n $name ]] || return 1
+  [[ -d $MODELS/$name ]] && return 0
+  log "downloading Vosk model $name (1.8 GB)"
+  mkdir -p "$MODELS"; tmp=$(mktemp -d "$MODELS/.tmp.XXXXXX")
+  if curl -fL --retry 3 -o "$tmp/m.zip" "https://alphacephei.com/vosk/models/$name.zip" \
+      && unzip -q "$tmp/m.zip" -d "$tmp" && [[ -d $tmp/$name ]]; then
+    mv "$tmp/$name" "$MODELS/$name"; rm -rf "$tmp"
+  else
+    rm -rf "$tmp"; warn "Vosk model $name: download failed"; return 1
+  fi
+}
+
+setup() {
+  local t pkg
+  command -v brew >/dev/null || die "Homebrew is required"
+  command -v ffmpeg >/dev/null || brew install ffmpeg
+  command -v deno >/dev/null || brew install deno          # yt-dlp needs a JS runtime for YouTube
+  command -v uv >/dev/null || brew install uv
+  for pkg in "${TOOLS[@]}"; do uv tool install -q --upgrade "$pkg"; done
+  [[ -x $PY ]] || uv venv -q --python "$PY_VERSION" "$VIDX_DIR/.venv"
+  VIRTUAL_ENV="$VIDX_DIR/.venv" uv pip install -q "${HELPER_PKGS[@]}"
+  [[ -x $PY_GIGA ]] || uv venv -q --python "$PY_GIGA_VERSION" "$VIDX_DIR/.venv-giga"
+  VIRTUAL_ENV="$VIDX_DIR/.venv-giga" uv pip install -q "${GIGA_PKGS[@]}"
+  log "compiling Swift helpers (Vision OCR, SpeechTranscriber)"
+  build_swift ocr; build_swift apple_asr
+  fetch_vosk ru
+  log "warming model caches (whisper large-v3, turbo, parakeet, GigaAM)"
+  t=$(mktemp -d); ffmpeg -loglevel error -f lavfi -i anullsrc=r=16000:cl=mono -t 1 "$t/s.wav"
+  mlx_whisper "$t/s.wav" --model "$M_WHISPER" -o "$t" --verbose False >/dev/null
+  mlx_whisper "$t/s.wav" --model "$M_TURBO" -o "$t" --verbose False >/dev/null
+  parakeet-mlx "$t/s.wav" --model "$M_PARAKEET" --output-dir "$t" >/dev/null
+  "$PY_GIGA" -I -c 'import gigaam; gigaam.load_model("v3_e2e_rnnt", device="cpu")' >/dev/null
+  rm -rf "$t"
+  log "setup done"
+}
+
+# --- commands --------------------------------------------------------------------------------
+[[ $# -gt 0 ]] || { usage; exit 1; }
+case "$1" in
+  -h|--help) usage; exit ;;
+  help)
+    case "${2:-}" in run) usage_run ;; find) usage_find ;; setup) usage_setup ;; *) usage ;; esac
+    exit ;;
+  setup) [[ ${2:-} == -h || ${2:-} == --help ]] && { usage_setup; exit; }; setup; exit ;;
+  find)
+    shift; [[ ${1:-} == -h || ${1:-} == --help ]] && { usage_find; exit; }
+    [[ $# -ge 2 ]] || { usage_find; exit 1; }
+    exec "$PY" "$LIB/find.py" "$@" ;;
+esac
+
+# --- options ---------------------------------------------------------------------------------
+INPUT="$1"; shift
+OUT="" LANG_OPT=auto ENGINES=$ALL_ENGINES GLOSSARY="" SCENE=0.3 EVERY=10 DEDUP=6 ROI=1 CROP=0 MAXH=1080
+FORCE=0 JOBS=1 SUB_LANGS="" CUTS=() DO_ASR=1 DO_FRAMES=1 DO_OCR=1 DO_SUBS=1
+val() { [[ $# -ge 2 && -n $2 ]] || die "option $1 needs a value"; }
+num() { [[ $2 =~ ^[0-9]+(\.[0-9]+)?$ ]] || die "$1 must be a number, got '$2'"; }
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o|--out) val "$@"; OUT="$2"; shift ;;
+    -l|--lang) val "$@"; LANG_OPT="$2"; shift ;;
+    -e|--engines) val "$@"; ENGINES="$2"; shift ;;
+    -j|--jobs) val "$@"; JOBS="$2"; shift ;;
+    -g|--glossary) val "$@"; [[ -f $2 ]] || die "no such glossary: $2"; GLOSSARY="$(readlink -f -- "$2")"; shift ;;
+    --scene) val "$@"; num "$@"; SCENE="$2"; shift ;;
+    --every) val "$@"; num "$@"; EVERY="$2"; shift ;;
+    --dedup) val "$@"; num "$@"; DEDUP="$2"; shift ;;
+    --roi) val "$@"; num "$@"; ROI="$2"; shift ;;
+    --max-height) val "$@"; num "$@"; MAXH="$2"; shift ;;
+    --crop) CROP=1 ;;
+    --meet) ROI=0.75; CROP=1 ;;
+    --cut)
+      val "$@"; [[ $2 =~ ^[0-9:.]+-[0-9:.]+$ ]] || die "--cut needs START-END, e.g. 36:30-50:00"
+      a=$(secs "${2%%-*}"); b=$(secs "${2##*-}")
+      awk -v a="$a" -v b="$b" 'BEGIN { exit !(a < b) }' || die "--cut $2: start must be before end"
+      CUTS+=("$a-$b"); shift ;;
+    --sub-langs) val "$@"; SUB_LANGS="$2"; shift ;;
+    --no-asr) DO_ASR=0 ;; --no-frames) DO_FRAMES=0 ;; --no-ocr) DO_OCR=0 ;; --no-subs) DO_SUBS=0 ;;
+    -f|--force) FORCE=1 ;;
+    -h|--help) usage_run; exit ;;
+    *) die "unknown option $1 (see: vidx help run)" ;;
+  esac
+  shift
+done
+[[ $JOBS =~ ^[1-9][0-9]*$ ]] || die "--jobs must be a positive number"
+LANG_RE='^[a-z]{2,3}(,[a-z]{2,3})*$'
+[[ $LANG_OPT == auto || $LANG_OPT =~ $LANG_RE ]] || die "--lang must be auto or a list like ru or ru,en"
+IFS=, read -r -a ENGINE_LIST <<< "$ENGINES"
+for e in "${ENGINE_LIST[@]}"; do
+  [[ ",$ALL_ENGINES," == *",$e,"* ]] || die "unknown engine '$e' (known: $ALL_ENGINES)"
+done
+has() { [[ ",$ENGINES," == *",$1,"* ]]; }
+need ffmpeg; [[ -x $PY ]] || die "helper venv missing — run: vidx setup"
+
+# --- output dir + step cache -------------------------------------------------------------------
+# .vidx/ marks a dir vidx made (so -o never wipes or overwrites someone else's files) and holds
+# one stamp per step: the options it ran with. A step reruns when its output is missing, its
+# stamp differs (other options, or an interrupted run that never wrote the stamp) or with -f.
+prepare_out() {
+  [[ ! -e $OUT || -d $OUT ]] || die "$OUT exists and is not a directory"
+  if [[ -d $OUT && -n $(ls -A "$OUT") && ! -d $OUT/.vidx ]]; then
+    die "$OUT is not empty and was not made by vidx; pick another -o"
+  fi
+  mkdir -p "$OUT/.vidx"
+  OUT=$(cd "$OUT" && pwd)
+}
+stamp_of() { echo "$OUT/.vidx/$(basename "$1").params"; }
+fresh() {  # output [params] → true if the step must run
+  [[ $FORCE == 1 || ! -s $1 ]] && return 0
+  [[ $# -ge 2 ]] || return 1
+  [[ "$(cat "$(stamp_of "$1")" 2>/dev/null)" != "$2" ]]
+}
+stamp() { printf '%s' "$2" > "$(stamp_of "$1")"; }
+same_input() {  # remember what this dir was made from; a different input means starting over
+  local prev; prev=$(cat "$OUT/.vidx/input" 2>/dev/null || true)
+  if [[ -n $prev && $prev != "$1" ]]; then warn "input changed ($prev → $1): redoing everything"; FORCE=1; fi
+  printf '%s' "$1" > "$OUT/.vidx/input"
+}
+find_source() {  # source.<ext> only: not yt-dlp's source.f137.mp4 / .temp.mp4 / .part leftovers
+  local f
+  for f in "$OUT"/source.*; do
+    [[ $(basename "$f") =~ ^source\.[A-Za-z0-9]+$ && -e $f ]] && { echo "$f"; return 0; }
+  done
+  return 0
+}
+
+# --- 1. source -------------------------------------------------------------------------------
+if [[ $INPUT =~ ^https?:// ]]; then
+  need yt-dlp
+  YTDLP=(yt-dlp --ignore-config --no-warnings --no-playlist)
+  if [[ -z $OUT ]]; then
+    id=$("${YTDLP[@]}" --skip-download --print "%(id)s" "$INPUT" | sed -n 1p)
+    id=${id//[^A-Za-z0-9_-]/_}
+    [[ -n $id ]] || die "could not read the video id of $INPUT"
+    OUT="./${id}_vidx-out"
+  fi
+  prepare_out; same_input "$INPUT"
+  OUT_T=${OUT//%/%%}  # yt-dlp output templates treat % specially
+  SRC=$(find_source)
+  if [[ $FORCE == 1 || -z $SRC ]]; then
+    log "downloading video (≤${MAXH}p) + metadata"
+    rm -f "$OUT"/source.*
+    "${YTDLP[@]}" --force-overwrites -f "bv*[height<=$MAXH]+ba/b[height<=$MAXH]/b" \
+      --merge-output-format mp4 -o "$OUT_T/source.%(ext)s" \
+      --write-info-json --write-description --write-thumbnail --convert-thumbnails jpg \
+      -o "infojson:$OUT_T/info" -o "description:$OUT_T/description" -o "thumbnail:$OUT_T/thumbnail" \
+      "$INPUT"
+    # yt-dlp appends its own extensions: info.info.json, description.description
+    [[ -f $OUT/info.info.json ]] && mv "$OUT/info.info.json" "$OUT/info.json"
+    [[ -f $OUT/description.description ]] && mv "$OUT/description.description" "$OUT/description.txt"
+    SRC=$(find_source)
+    [[ -n $SRC ]] || die "download failed"
+  fi
+  if [[ $DO_SUBS == 1 ]] && { [[ $FORCE == 1 ]] || ! ls "$OUT"/subs/*.json3 >/dev/null 2>&1; }; then
+    # Two passes so manual and auto captions land in separate files. Only original-language
+    # tracks: ru, en, the --lang list and the video's own language. An empty entry would be a
+    # match-all regex (every machine translation), so the list is built without one.
+    log "downloading YouTube subtitles (manual + auto)"
+    rm -rf "$OUT/subs"; mkdir -p "$OUT/subs"
+    VL=$("$PY" -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("language") or "")' \
+      "$OUT/info.json" 2>/dev/null || true)
+    [[ $VL =~ ^[A-Za-z]{2,3}(-[A-Za-z0-9]+)?$ ]] || VL=""
+    SL=$SUB_LANGS
+    if [[ -z $SL ]]; then
+      for l in ru en ${LANG_OPT//,/ } $VL; do
+        [[ $l == auto || ",$SL," == *",$l,"* ]] || SL="${SL:+$SL,}$l,$l-orig"
+      done
+    fi
+    "${YTDLP[@]}" -q --skip-download --write-subs --sub-langs "$SL" --sub-format json3 \
+      -o "subtitle:$OUT_T/subs/manual" "$INPUT" || warn "manual subtitles failed"
+    "${YTDLP[@]}" -q --skip-download --write-auto-subs --sub-langs "$SL" --sub-format json3 \
+      -o "subtitle:$OUT_T/subs/auto" "$INPUT" || warn "auto subtitles failed"
+  fi
+else
+  [[ -f $INPUT ]] || die "no such file: $INPUT"
+  [[ $INPUT == -* ]] && INPUT="./$INPUT"
+  base=$(basename "$INPUT"); ext=video; [[ $base == *.* ]] && ext=${base##*.}
+  OUT=${OUT:-"./${base%.*}_vidx-out"}
+  real=$(readlink -f "$INPUT")
+  prepare_out; same_input "$real"
+  SRC="$OUT/source.$ext"
+  rm -f "$OUT"/source.*; ln -s "$real" "$SRC"
+fi
+log "output: $OUT"
+FAILED="$OUT/.vidx/failed"; : > "$FAILED"
+
+has_stream() { [[ -n $(ffprobe -v error -select_streams "$1" -show_entries stream=codec_type -of csv=p=0 "$SRC") ]]; }
+
+# --- 2. audio, 3. language -------------------------------------------------------------------
+AUDIO="$OUT/audio.wav"
+if [[ $DO_ASR == 1 ]]; then
+  has_stream a || die "no audio track in $SRC (use --no-asr for pictures only)"
+  if fresh "$AUDIO" 16k-mono; then
+    log "extracting audio (16 kHz mono)"
+    ffmpeg -nostdin -loglevel error -y -i "$SRC" -vn -ac 1 -ar 16000 -c:a pcm_s16le "$OUT/audio.tmp.wav"
+    mv "$OUT/audio.tmp.wav" "$AUDIO"; stamp "$AUDIO" 16k-mono
+  fi
+  DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$AUDIO"); DUR=${DUR%.*}
+  log "duration: $(printf '%d:%02d' $((DUR / 60)) $((DUR % 60)))"
+  if [[ $LANG_OPT == auto ]]; then
+    if fresh "$OUT/lang.txt" detect; then
+      log "detecting language (10 s clips, 1 per minute, whisper turbo)"
+      mlx_py "$LIB/detect_lang.py" "$AUDIO" "$M_TURBO" > "$OUT/lang.tmp"
+      mv "$OUT/lang.tmp" "$OUT/lang.txt"; stamp "$OUT/lang.txt" detect
+    fi
+    LANGS=$(cat "$OUT/lang.txt")
+  else
+    LANGS=$LANG_OPT
+  fi
+  [[ $LANGS =~ $LANG_RE ]] || die "bad language list '$LANGS' (lang.txt?)"
+else
+  LANGS=$LANG_OPT
+  if [[ $LANGS == auto ]]; then  # no speech run: the YouTube track language decides, else ru
+    LANGS=$("$PY" -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("language") or "ru")' \
+      "$OUT/info.json" 2>/dev/null || echo ru)
+    [[ $LANGS =~ $LANG_RE ]] || LANGS=ru
+  fi
+fi
+IFS=, read -r -a LANG_LIST <<< "$LANGS"
+MIXED=0; [[ ${#LANG_LIST[@]} -gt 1 ]] && MIXED=1
+[[ $DO_ASR == 1 ]] && log "language: $LANGS$([[ $MIXED == 1 ]] && echo ' (mixed: language-bound engines run once per language)')"
+tag() { if [[ $MIXED == 1 ]]; then echo "$1@$2"; else echo "$1"; fi; }  # whisper-large-v3 or whisper-large-v3@en
+
+# --- job queue: engines + frames, one by one or -j N at a time ---------------------------------
+Q_LABEL=() Q_OUT=() Q_PARAMS=() Q_CMD=() SOURCES=""
+queue() {  # label, output ("" = the job checks its own cache), params, command...
+  Q_LABEL+=("$1"); Q_OUT+=("$2"); Q_PARAMS+=("$3"); shift 3
+  Q_CMD+=("$(printf '%q ' "$@")")
+}
+queue_asr() {  # like queue, for an engine output in asr/: also tells merge to read it
+  SOURCES="${SOURCES:+$SOURCES,}$(basename "$2" .json)"; queue "$@"
+}
+run_job() {  # mode (fg|bg), label, output, params, command string
+  local mode=$1 label=$2 out=$3 params=$4 cmd=$5 t0=$SECONDS lf="" ok
+  if [[ -n $out ]] && ! fresh "$out" "$params"; then log "$label: cached"; return 0; fi
+  if [[ $mode == bg ]]; then
+    lf="$OUT/logs/$(printf '%s' "$label" | tr -c 'A-Za-z0-9@.-' '_' | tr -s _).log"
+    log "$label: started (log: logs/$(basename "$lf"))"
+    if eval "$cmd" > "$lf" 2>&1; then ok=1; else ok=0; fi
+  else
+    log "$label"
+    if eval "$cmd"; then ok=1; else ok=0; fi
+  fi
+  if [[ $ok == 1 ]]; then
+    [[ -z $out ]] || stamp "$out" "$params"
+    log "$label: done in $((SECONDS - t0)) s"
+  else
+    printf '%s\n' "$label" >> "$FAILED"; warn "$label failed, continuing"
+    [[ -z $lf ]] || tail -5 "$lf" | sed 's/^/    /' >&2
+  fi
+}
+run_queue() {
+  local i
+  [[ $JOBS -gt 1 ]] && { mkdir -p "$OUT/logs"; log "running ${#Q_LABEL[@]} jobs, $JOBS at a time"; }
+  for i in "${!Q_LABEL[@]}"; do
+    if [[ $JOBS -gt 1 ]]; then
+      while [[ $(jobs -rp | wc -l) -ge $JOBS ]]; do sleep 1; done
+      run_job bg "${Q_LABEL[$i]}" "${Q_OUT[$i]}" "${Q_PARAMS[$i]}" "${Q_CMD[$i]}" &
+    else
+      run_job fg "${Q_LABEL[$i]}" "${Q_OUT[$i]}" "${Q_PARAMS[$i]}" "${Q_CMD[$i]}"
+    fi
+  done
+  wait
+}
+
+# --- 4. speech -------------------------------------------------------------------------------
+PROMPT=""
+[[ -n $GLOSSARY ]] && PROMPT=$(sed -n 's/^prompt: *//p' "$GLOSSARY" | head -1)
+whisper() {  # model, output stem, language, clip timestamps ("" = whole file)
+  local args=(--model "$1" -o "$OUT/asr" --output-name "$2" -f json --verbose False
+              --condition-on-previous-text False --language "$3")
+  [[ -n $PROMPT ]] && args+=(--initial-prompt "$PROMPT")
+  [[ -n $4 ]] && args+=(--clip-timestamps "$4")
+  mlx_whisper "$AUDIO" "${args[@]}"
+}
+parakeet() {
+  parakeet-mlx "$AUDIO" --model "$M_PARAKEET" --output-format json --output-dir "$OUT/asr" --output-template parakeet
+}
+clips_of() {  # language → "start,end,start,end" of its regions; "" = whole file; "none" = no region
+  [[ $MIXED == 1 ]] || return 0
+  "$PY" -I -c 'import json, sys
+r = ["%s,%s" % (x["start"], x["end"]) for x in json.load(open(sys.argv[1])) if x["lang"] == sys.argv[2]]
+print(",".join(r) or "none")' "$OUT/regions.json" "$1"
+}
+apple_supports() {  # capture first: "cmd | grep -q" can fail under pipefail when grep exits early
+  local l; l=$("$LIB/apple_asr" --locales 2>/dev/null | sed -n 's/^supported://p' || true)
+  [[ " $l " == *" $1-"* ]]
+}
+single_language() {  # mixed split impossible → carry on with the first language
+  warn "$1: continuing with '${LANG_LIST[0]}' only"
+  LANGS=${LANG_LIST[0]}; LANG_LIST=("$LANGS"); MIXED=0
+}
+
+# Mixed speech: parakeet (no language forced) runs first, then regions.py splits the audio into
+# single-language regions. whisper/turbo @L then transcribe only the L regions (--clip-timestamps),
+# GigaAM only the ru ones; without that whisper translates the other language and GigaAM garbles it.
+if [[ $DO_ASR == 1 && $MIXED == 1 ]]; then
+  mkdir -p "$OUT/asr"
+  has parakeet || { ENGINES="$ENGINES,parakeet"; log "mixed speech needs parakeet: added"; }
+  SOURCES=parakeet
+  run_job fg "parakeet-tdt-0.6b-v3 [any]" "$OUT/asr/parakeet.json" "$M_PARAKEET" parakeet
+  if [[ ! -s $OUT/asr/parakeet.json ]]; then
+    single_language "parakeet failed, so mixed speech cannot be split"
+  elif fresh "$OUT/regions.json" "$LANGS"; then
+    log "splitting into language regions"
+    if mlx_py "$LIB/regions.py" "$OUT/asr/parakeet.json" "$LANGS" "$AUDIO" "$M_TURBO" "$OUT/regions.tmp"; then
+      mv "$OUT/regions.tmp" "$OUT/regions.json"; stamp "$OUT/regions.json" "$LANGS"
+    else
+      single_language "language split failed"
+    fi
+  fi
+fi
+REGIONS=""; [[ $MIXED == 1 ]] && REGIONS=$(cat "$OUT/regions.json")
+
+# Queue order interleaves GPU and CPU work, so -j 2/3 keeps both busy:
+# whisper (GPU) · vosk (CPU) · frames+OCR (CPU) · gigaam · parakeet · apple · turbo
+if [[ $DO_ASR == 1 ]]; then
+  mkdir -p "$OUT/asr"
+  for L in "${LANG_LIST[@]}"; do
+    has whisper || break
+    s=$(tag whisper-large-v3 "$L"); c=$(clips_of "$L")
+    if [[ $c == none ]]; then log "whisper large-v3 [$L]: no $L regions, skipped"
+    else queue_asr "whisper large-v3 [$L]" "$OUT/asr/$s.json" "$M_WHISPER $L $c $PROMPT" \
+      whisper "$M_WHISPER" "$s" "$L" "$c"; fi
+  done
+  for L in "${LANG_LIST[@]}"; do
+    has vosk || break
+    if fetch_vosk "$L"; then
+      s=$(tag vosk "$L")
+      queue_asr "Vosk [$L] (CPU)" "$OUT/asr/$s.json" "$(vosk_model "$L")" \
+        "$PY" "$LIB/vosk_run.py" "$MODELS/$(vosk_model "$L")" "$AUDIO" "$OUT/asr/$s.json"
+    else log "Vosk: no model for '$L', skipped"; fi
+  done
+fi
+if [[ $DO_FRAMES == 1 ]] && has_stream v; then
+  frames_and_ocr() {
+    local fp="scene=$SCENE every=$EVERY dedup=$DEDUP roi=$ROI crop=$CROP" raw files
+    if fresh "$OUT/frames/frames.json" "$fp"; then
+      echo "frames: scene change > $SCENE or every ${EVERY}s" >&2
+      rm -rf "$OUT/frames" "$OUT/ocr"; mkdir -p "$OUT/frames"
+      raw=$(mktemp -d)  # outside OUT: a % in the path would break ffmpeg's %06d pattern
+      if ! { ffmpeg -nostdin -hide_banner -y -i "$SRC" -an \
+               -vf "select='isnan(prev_selected_t)+gt(scene\,$SCENE)+gte(t-prev_selected_t\,$EVERY)',showinfo" \
+               -fps_mode vfr -q:v 2 "$raw/%06d.jpg" 2> "$raw/showinfo.log" \
+             && "$PY" "$LIB/frames.py" "$raw" "$raw/showinfo.log" "$OUT/frames" "$DEDUP" "$ROI" "$CROP"; }; then
+        rm -rf "$raw"; return 1
+      fi
+      rm -rf "$raw"; stamp "$OUT/frames/frames.json" "$fp"
+    fi
+    if [[ $DO_OCR == 1 ]] && fresh "$OUT/ocr/ocr.jsonl" "$OCR_LANGS"; then
+      build_swift ocr || return 1
+      files=("$OUT"/frames/unique/*.jpg)
+      echo "OCR (Apple Vision, $OCR_LANGS) on ${#files[@]} frames" >&2
+      mkdir -p "$OUT/ocr"
+      if [[ -e ${files[0]} ]]; then "$LIB/ocr" "$OCR_LANGS" "${files[@]}" > "$OUT/ocr/ocr.tmp" || return 1
+      else : > "$OUT/ocr/ocr.tmp"; fi
+      mv "$OUT/ocr/ocr.tmp" "$OUT/ocr/ocr.jsonl"; stamp "$OUT/ocr/ocr.jsonl" "$OCR_LANGS"
+    fi
+  }
+  queue "frames + OCR" "" "" frames_and_ocr
+fi
+if [[ $DO_ASR == 1 ]]; then
+  if has gigaam; then
+    if [[ ",$LANGS," == *,ru,* ]]; then
+      GIGA_ARGS=("$AUDIO" "$OUT/asr/gigaam.json"); [[ $MIXED == 1 ]] && GIGA_ARGS+=("$OUT/regions.json")
+      queue_asr "GigaAM-v3 [ru]" "$OUT/asr/gigaam.json" "v3_e2e_rnnt $REGIONS" "$PY_GIGA" "$LIB/gigaam_run.py" "${GIGA_ARGS[@]}"
+    else log "GigaAM: Russian only, skipped"; fi
+  fi
+  if has parakeet && [[ $MIXED == 0 ]]; then
+    queue_asr "parakeet-tdt-0.6b-v3 [any]" "$OUT/asr/parakeet.json" "$M_PARAKEET" parakeet
+  fi
+  if has apple && build_swift apple_asr; then
+    for L in "${LANG_LIST[@]}"; do
+      s=$(tag apple "$L")
+      if apple_supports "$L"; then queue_asr "Apple SpeechTranscriber [$L]" "$OUT/asr/$s.json" "$L" "$LIB/apple_asr" "$L" "$AUDIO" "$OUT/asr/$s.json"
+      else log "Apple SpeechTranscriber: no '$L', skipped"; fi
+    done
+  fi
+  for L in "${LANG_LIST[@]}"; do
+    has turbo || break
+    s=$(tag whisper-turbo "$L"); c=$(clips_of "$L")
+    if [[ $c == none ]]; then log "whisper turbo [$L]: no $L regions, skipped"
+    else queue_asr "whisper turbo [$L]" "$OUT/asr/$s.json" "$M_TURBO $L $c $PROMPT" \
+      whisper "$M_TURBO" "$s" "$L" "$c"; fi
+  done
+fi
+run_queue
+
+# --- 6. merge --------------------------------------------------------------------------------
+log "merging"
+MERGE_ARGS=(--langs "$LANGS")
+[[ -n $GLOSSARY ]] && MERGE_ARGS+=(--glossary "$GLOSSARY")
+[[ $DO_ASR == 1 ]] && MERGE_ARGS+=(--sources "$SOURCES")
+for c in ${CUTS[@]+"${CUTS[@]}"}; do MERGE_ARGS+=(--cut "$c"); done
+"$PY" "$LIB/merge.py" "$OUT" "${MERGE_ARGS[@]}"
+if [[ -s $FAILED ]]; then
+  warn "failed jobs: $(paste -sd, - < "$FAILED" | sed 's/,/, /g') — see logs/ (with -j) or the output above"
+  log "done with errors → $OUT/transcript.md"
+  exit 3
+fi
+log "done → $OUT/transcript.md"
