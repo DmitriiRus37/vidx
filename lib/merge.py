@@ -10,11 +10,13 @@ Writes aligned.md, transcript.md, transcript.txt, ocr.md.
 Merge, per language region (regions.json in mixed runs, else the whole file): base = the first
 source in BASE_ORDER whose language fits the region. Each base segment is replaced by the longer of
 parakeet/whisper over the same span (their segments at least SPAN_INSIDE inside it) when it looks like
-speech was skipped: fewer than SKIP_CPS chars/s without fillers, the alternative more than ALT_RATIO
-times longer, longer than ALT_MIN_CHARS and at most LOOP_CPS chars/s (guards against repetition loops).
+speech was skipped: fewer than skip_cps chars/s without fillers, the alternative more than ALT_RATIO
+times longer, longer than ALT_MIN_CHARS and at most loop_cps chars/s (guards against repetition loops).
+skip_cps and loop_cps come from the region language's row in languages.py (they depend on the script).
 
-Sources and their language: gigaam = ru, parakeet = any (no language forced), "<engine>@<lang>" =
-that language (mixed runs), youtube-<kind>@<lang> from the track, everything else = the only language.
+Sources and their language: gigaam = ru, parakeet = any of its 25 languages (none is forced; on other
+languages it outputs gibberish), "<engine>@<lang>" = that language (mixed runs), youtube-<kind>@<lang>
+from the track, everything else = the only language.
 Subtitles, titles and OCR text come from outside, so they are escaped before going into Markdown.
 """
 import argparse
@@ -24,19 +26,16 @@ import os
 import re
 import sys
 
+import languages
 from common import hms, load_segments
 
 WINDOW_S, PARA_S = 40, 55
-SKIP_CPS, ALT_RATIO, ALT_MIN_CHARS, LOOP_CPS, SPAN_INSIDE = 6, 2, 80, 25, 0.6
+ALT_RATIO, ALT_MIN_CHARS, SPAN_INSIDE = 2, 80, 0.6
 BASE_ORDER = ["gigaam", "whisper-large-v3", "parakeet", "whisper-turbo", "apple", "youtube-manual",
               "youtube-auto", "vosk"]
 ALT = ["parakeet", "whisper-large-v3"]
 
-W = r"(?<![\wА-Яа-яЁё])"  # word boundaries that also work next to Cyrillic
-E = r"(?![\wА-Яа-яЁё])"
-# hesitation sounds only: а-а, э-э, ааа, ммм, хмм, и-и, ну-у, uh, um
-FILL = re.compile(W + r"(?:[ИиНн]у?-[иу]+|[АаЭэ]+-[аэ]+(?:-[аэ]+)*|[Аа]{3,}|[Ээ]{3,}|[Хх]м+|[Мм]{3,}|м-м"
-                  r"|[Uu]h+|[Uu]m+|[Uu]hm|[Ee]rm)" + E + r"[,.]?\s*")
+W, E = languages.W, languages.E  # word boundaries that also work next to Cyrillic (glossary <W>, <E>)
 
 
 def args():
@@ -104,11 +103,17 @@ def load_glossary(path):
     return rules
 
 
+# A "[" that opens an image (![), a link ([text](url)), a reference ([text][ref]) or a link definition
+# ([ref]: url). Other punctuation (! * _ | and lone brackets) is left alone: it cannot inject anything.
+LINK_OPEN = re.compile(r"(?<=!)\[|\[(?=[^\]]*\][(\[:])")
+
+
 def md(text):
-    """Escape outside text for Markdown: no HTML, images, links or headings sneaking in."""
-    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    text = re.sub(r"([\[\]!`*_|])", r"\\\1", text)
-    return re.sub(r"^(\s*)([#>+-])", r"\1\\\2", text)
+    """Escape outside text for Markdown: no HTML, images, links, code spans, headings, lists or quotes
+    sneaking in, while ordinary punctuation stays readable (усім! not усім\\!)."""
+    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("`", "\\`")
+    text = LINK_OPEN.sub(r"\\[", text)
+    return re.sub(r"^(\s*)([#+*-])", r"\1\\\2", text)
 
 
 def fence(text):
@@ -126,9 +131,36 @@ def nodup(segs):
     return res
 
 
-def span(segs, a, e):
+def skipped_speech(got, alt, dur, row):
+    """A base chunk of `got` chars (fillers removed) over dur s looks like the engine skipped speech
+    that the alternative (`alt` chars, same span) has. row: languages.get(region language)."""
+    return got / dur < row.skip_cps and alt > ALT_RATIO * got and alt > ALT_MIN_CHARS and alt <= row.loop_cps * dur
+
+
+def span(segs, a, e, joiner=" "):
     """Text of the segments that lie mostly inside [a, e]."""
-    return " ".join(t for s0, e0, t in segs if e0 > s0 and max(0, min(e0, e) - max(s0, a)) >= SPAN_INSIDE * (e0 - s0))
+    return joiner.join(t for s0, e0, t in segs
+                       if e0 > s0 and max(0, min(e0, e) - max(s0, a)) >= SPAN_INSIDE * (e0 - s0))
+
+
+SENTENCE_START = re.compile(r"(^|[.!?…]\s+)([¿¡]?\w)")
+
+
+def capitalise(t):
+    """Upper-case the first letter of the text and of each sentence: works for every cased alphabet
+    (і, ї, ў, ä, é...), changes nothing in scripts without case."""
+    return SENTENCE_START.sub(lambda m: m[1] + m[2].upper(), t)
+
+
+def join_chunks(chunks):
+    """[(text, joiner)] → one string. Each chunk is preceded by its language's joiner ("" for Chinese
+    and Japanese), or by a space where the joiner changes (a switch between such languages)."""
+    res = ""
+    for i, (t, j) in enumerate(chunks):
+        if i:
+            res += j if chunks[i - 1][1] == j else " "
+        res += t
+    return res
 
 
 def main():
@@ -150,13 +182,20 @@ def main():
             return name.split("@")[1]
         return {"gigaam": "ru", "parakeet": None}.get(name, langs[0])
 
-    def clean(t):
-        t = FILL.sub("", t)
+    def fits(name, lang):
+        if lang_of(name) is None:  # parakeet: not told a language
+            return languages.get(lang).parakeet
+        return lang_of(name) == lang
+
+    def unfill(t, row):  # hesitation sounds of the region's language removed
+        return re.sub(row.fillers, "", t) if row.fillers else t
+
+    def clean(t, row):
+        t = unfill(t, row)
         for rx, repl in rules:
             t = rx.sub(repl, t)
         t = re.sub(r"\s{2,}", " ", t).strip().strip(",").strip()
-        t = re.sub(r"([.!?…]\s+)([а-яёa-z])", lambda m: m[1] + m[2].upper(), t)
-        return t[:1].upper() + t[1:]
+        return capitalise(t)
 
     # --- merged transcript, region by region ---
     regions = [{"start": 0.0, "end": float("inf"), "lang": langs[0]}]
@@ -166,42 +205,43 @@ def main():
     merged, fallbacks, used = [], 0, {}
     for r in regions:
         lang, r0, r1 = r["lang"], r["start"], r["end"]
-        fits = [n for n in sources if lang_of(n) in (lang, None)]
-        base = next((n for e in BASE_ORDER for n in fits if engine(n) == e), None)
+        row = languages.get(lang)
+        usable = [n for n in sources if fits(n, lang)]
+        base = next((n for e in BASE_ORDER for n in usable if engine(n) == e), None)
         if not base:
             continue
-        alts = [n for e in ALT for n in fits if engine(n) == e and n != base]
+        alts = [n for e in ALT for n in usable if engine(n) == e and n != base]
         for s0, e0, text in nodup([s for s in sources[base] if r0 <= (s[0] + s[1]) / 2 < r1]):
             if any(c0 <= s0 < c1 for c0, c1 in cuts):
                 continue
             src, dur = base, max(1.0, e0 - s0)
-            got = len(FILL.sub("", text))
-            alt, alt_src = max([(span(sources[n], s0, e0), n) for n in alts] or [("", "")], key=lambda x: len(x[0]))
-            if (got / dur < SKIP_CPS and len(alt) > ALT_RATIO * got and len(alt) > ALT_MIN_CHARS
-                    and len(alt) <= LOOP_CPS * dur):
+            got = len(unfill(text, row))
+            alt, alt_src = max([(span(sources[n], s0, e0, row.joiner), n) for n in alts] or [("", "")],
+                               key=lambda x: len(x[0]))
+            if skipped_speech(got, len(alt), dur, row):
                 text, src, fallbacks = alt, alt_src, fallbacks + 1
-            text = clean(text)
+            text = clean(text, row)
             if text:
-                merged.append((s0, e0, text))
+                merged.append((s0, e0, text, row.joiner))
                 used[f"{src} [{lang}]"] = used.get(f"{src} [{lang}]", 0) + 1
     merged.sort()
 
     paras, cur, start = [], [], None  # (start, text) or (start, None, chapter title)
     chapters, ch = info.get("chapters") or [], 0
-    for s0, e0, t in merged:
+    for s0, e0, t, joiner in merged:
         while ch < len(chapters) and chapters[ch]["start_time"] <= s0:
             if cur:
-                paras.append((start, " ".join(cur)))
+                paras.append((start, join_chunks(cur)))
                 cur, start = [], None
             paras.append((chapters[ch]["start_time"], None, chapters[ch]["title"]))
             ch += 1
         start = s0 if start is None else start
-        cur.append(t)
+        cur.append((t, joiner))
         if e0 - start >= PARA_S:
-            paras.append((start, " ".join(cur)))
+            paras.append((start, join_chunks(cur)))
             cur, start = [], None
     if cur:
-        paras.append((start, " ".join(cur)))
+        paras.append((start, join_chunks(cur)))
 
     with open(os.path.join(out, "transcript.md"), "w") as f:
         f.write(f"# {md(info.get('title') or os.path.basename(out.rstrip('/')))}\n\n")
@@ -216,7 +256,7 @@ def main():
         f.writelines(f"## {hms(p[0])} · {md(p[2])}\n\n" if p[1] is None else f"**[{hms(p[0])}]** {md(p[1])}\n\n"
                      for p in paras)
     with open(os.path.join(out, "transcript.txt"), "w") as f:
-        f.write("".join(f"[{hms(s0)}] {t}\n" for s0, _, t in merged))
+        f.write("".join(f"[{hms(s0)}] {t}\n" for s0, _, t, _ in merged))
 
     # --- aligned view: every source side by side in 40 s windows ---
     end = max([s[1] for v in sources.values() for s in v] + [r["t"] for r in ocr] + [0])
@@ -228,7 +268,7 @@ def main():
             for name, segs in sources.items():
                 txt = [x for _, _, x in nodup([s for s in segs if t <= (s[0] + s[1]) / 2 < t + WINDOW_S])]
                 if txt:
-                    f.write(f"- **{name}:** {md(' '.join(txt))}\n")
+                    f.write(f"- **{name}:** {md(languages.get(lang_of(name) or langs[0]).joiner.join(txt))}\n")
             for r in ocr:
                 if t <= r["t"] < t + WINDOW_S:
                     one = " · ".join(r["text"].splitlines())

@@ -95,3 +95,77 @@ def test_ctrl_c_stops_everything(tmp_path, jobs):
     for f in pids.iterdir():
         with pytest.raises(ProcessLookupError):
             os.kill(int(f.name), 0)
+
+
+def test_parakeet_not_queued_outside_its_languages(tmp_path):
+    r = run_vidx(FIXTURE, "-l", "zh", "-o", "out", "-e", "whisper,parakeet", tmp_path=tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert [c["engine"] for c in fake_calls(tmp_path)] == ["whisper", "ocr"]
+    assert "parakeet: no 'zh', skipped" in r.stderr
+
+
+def test_parakeet_queued_for_its_languages(tmp_path):
+    r = run_vidx(FIXTURE, "-l", "uk", "-o", "out", "-e", "whisper,parakeet", tmp_path=tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert [c["engine"] for c in fake_calls(tmp_path)] == ["whisper", "ocr", "parakeet"]
+
+
+def test_apple_gets_explicit_locale_and_timeout(tmp_path):
+    r = run_vidx(FIXTURE, "-l", "de", "-o", "out", "-e", "apple", tmp_path=tmp_path,
+                 env={"VIDX_FAKE_APPLE_LOCALES": "de-AT de-CH de-DE en-US", "VIDX_APPLE_TIMEOUT": "7"})
+    assert r.returncode == 0, r.stderr
+    (call,) = [c for c in fake_calls(tmp_path) if c["engine"] == "apple"]
+    assert call["args"][:3] == ["--timeout", "7", "de-DE"]
+    assert (tmp_path / "out" / "asr" / "apple.json").exists()
+
+
+def test_apple_skipped_when_locale_not_supported(tmp_path):
+    r = run_vidx(FIXTURE, "-l", "de", "-o", "out", "-e", "apple", tmp_path=tmp_path,
+                 env={"VIDX_FAKE_APPLE_LOCALES": "de-AT en-US"})  # de-AT is not de-DE
+    assert r.returncode == 0, r.stderr
+    assert "Apple SpeechTranscriber: no de-DE, skipped" in r.stderr
+    assert not [c for c in fake_calls(tmp_path) if c["engine"] == "apple"]
+
+
+def test_apple_timeout_marks_engine_failed_and_continues(tmp_path):
+    r = run_vidx(FIXTURE, "-l", "de", "-o", "out", "-e", "apple,whisper", tmp_path=tmp_path,
+                 env={"VIDX_FAKE_APPLE_LOCALES": "de-DE", "VIDX_FAKE_APPLE_EXIT": "4"})
+    assert r.returncode == 3
+    assert "model download for de-DE timed out" in r.stderr
+    assert "failed jobs: Apple SpeechTranscriber [de]" in r.stderr
+    assert "Fake whisper de" in (tmp_path / "out" / "transcript.txt").read_text()
+
+
+def ocr_langs_of(tmp_path):
+    (call,) = [c for c in fake_calls(tmp_path) if c["engine"] == "ocr"]
+    return call["args"][0]
+
+
+@pytest.mark.parametrize("lang, want", [("ru", "ru-RU,en-US"), ("ja", "ja-JP,en-US"), ("en", "en-US"),
+                                        ("be", "ru-RU,uk-UA,en-US"), ("ko", "en-US")])
+def test_ocr_follows_the_languages(tmp_path, lang, want):
+    r = run_vidx(FIXTURE, "-l", lang, "-o", "out", "-e", "whisper", tmp_path=tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert ocr_langs_of(tmp_path) == want
+
+
+def test_ocr_for_mixed_run_is_the_union(tmp_path):
+    r = run_vidx(FIXTURE, "-l", "zh,de", "-o", "out", "-e", "whisper", tmp_path=tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert ocr_langs_of(tmp_path) == "zh-Hans,de-DE,en-US"
+
+
+@pytest.mark.parametrize("lang, model", [("de", "vosk-model-de-0.21"), ("uk", "vosk-model-uk-v3"),
+                                         ("zh", "vosk-model-cn-0.22"), ("ru", "vosk-model-ru-0.42")])
+def test_vosk_model_from_the_table(tmp_path, lang, model):
+    r = run_vidx(FIXTURE, "-l", lang, "-o", "out", "-e", "vosk", tmp_path=tmp_path)
+    assert r.returncode == 0, r.stderr
+    (call,) = [c for c in fake_calls(tmp_path) if c["engine"] == "vosk"]
+    assert call["args"][0].endswith("/models/" + model)
+
+
+def test_no_vosk_for_belarusian(tmp_path):
+    r = run_vidx(FIXTURE, "-l", "be", "-o", "out", "-e", "vosk,whisper", tmp_path=tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert "vosk" not in [c["engine"] for c in fake_calls(tmp_path)]
+    assert "Vosk: no model for 'be', skipped" in r.stderr

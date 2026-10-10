@@ -18,7 +18,8 @@ TOOLS=(mlx-whisper==0.4.3 parakeet-mlx==0.5.3 'yt-dlp[default]')
 HELPER_PKGS=(vosk==0.3.44 pillow==12.3.0 numpy==2.4.6)
 GIGA_PKGS=('gigaam[torch] @ git+https://github.com/salute-developers/GigaAM@7447938d791c4f3e643386ee22c33777004293a5'
            torch==2.14.1 torchaudio==2.11.0 soundfile==0.14.0 numpy==2.4.6)
-OCR_LANGS=ru-RU,en-US
+APPLE_BIN="$LIB/apple_asr"
+APPLE_TIMEOUT=${VIDX_APPLE_TIMEOUT:-300}  # seconds for Apple's speech model download (it can hang)
 # Python for the venvs: the code runs on 3.11+, GigaAM pins onnxruntime 1.23 which has no 3.14 build.
 PY_VERSION=${VIDX_PYTHON:-3.14}
 PY_GIGA_VERSION=${VIDX_PYTHON_GIGA:-3.13}
@@ -73,7 +74,8 @@ LANGUAGE
            counts if it wins at least 2 clips and 20 % of them; no speech at
            all → ru. Result cached in lang.txt.
   ru       one language: whisper, turbo, Apple and Vosk are told it, GigaAM
-           runs (ru only), parakeet is never told a language.
+           runs (ru only), parakeet is never told a language and runs only
+           for its 25 European languages (elsewhere it writes gibberish).
   ru,en    mixed speech (whole passages in each language). parakeet runs
            first; its sentences, labelled Cyrillic vs Latin, split the audio
            into regions (gaps get whisper's language detection) → regions.json.
@@ -99,18 +101,23 @@ SPEECH
 
   engine    model                        languages          runs on  speed*
   whisper   whisper-large-v3 (MLX)       99, forced         GPU      ~4 min
-  parakeet  parakeet-tdt-0.6b-v3 (MLX)   25 European, any   GPU      ~1 min
+  parakeet  parakeet-tdt-0.6b-v3 (MLX)   25 European        GPU      ~1 min
   gigaam    GigaAM-v3 e2e_rnnt (Sber)    ru only            GPU      ~3 min
   turbo     whisper-large-v3-turbo       99, forced         GPU      ~2 min
-  apple     macOS SpeechTranscriber      en, de, fr… no ru  ANE      ~1 min
-  vosk      Kaldi vosk-model-ru / en-us  ru, en             CPU      ~60 min
+  apple     macOS SpeechTranscriber      en de fr it es     ANE      ~1 min
+                                         ja zh hi; no ru
+  vosk      Kaldi vosk-model-<lang>      ru en de fr it es  CPU      ~60 min
+                                         ja zh hi uk ar
   youtube   manual + auto subtitles      as published       —        download
   * rough, per hour of audio on Apple Silicon, one job at a time
+  apple downloads its speech model per locale on first use; the download
+  gets VIDX_APPLE_TIMEOUT seconds (default 300), then the engine fails.
 
   Merge, per language region: base = first fitting source of GigaAM, whisper,
   parakeet, turbo, apple, YouTube, Vosk. A base chunk is swapped for parakeet/
-  whisper text only if it looks like speech was skipped (<6 chars/s, the other
-  is >2x longer and >80 chars, <=25 chars/s).
+  whisper text only if it looks like speech was skipped (below the language's
+  chars/s floor, e.g. 6 for ru/en, 2 for zh; the other is >2x longer and >80
+  chars and not faster than the language's loop limit, 25 for ru/en).
 
 PICTURES
       --scene X          ffmpeg scene-change threshold 0..1 (default 0.3)
@@ -122,6 +129,7 @@ PICTURES
       --crop             crop frames to the non-dark screen-share area
       --meet             Google Meet recordings: --roi 0.75 --crop
                          (ignores the participant tiles on the right)
+  OCR (Apple Vision) reads the run's languages plus English (be: ru + uk).
 
 SKIP STEPS
       --no-asr           no audio, language or speech: pictures + OCR (+ subs)
@@ -186,7 +194,7 @@ Installs or upgrades, then downloads every model once (re-running is safe):
 Existing venvs are kept; delete .venv / .venv-giga to rebuild them. Override the
 versions with VIDX_PYTHON / VIDX_PYTHON_GIGA.
   lib/        ocr, apple_asr (compiled from Swift)
-  models/     vosk-model-ru-0.42 (1.8 GB; the English one is fetched when needed)
+  models/     vosk-model-ru-0.42 (1.8 GB; other languages' models are fetched on first use)
   HF cache    whisper-large-v3, whisper-large-v3-turbo, parakeet-tdt-0.6b-v3
   ~/.cache/gigaam  GigaAM v3_e2e_rnnt
 EOF
@@ -216,15 +224,13 @@ build_swift() {  # name → lib/<name>, rebuilt when the .swift source is newer
   swiftc -O -o "$LIB/$1" "$LIB/$1.swift"
 }
 
-vosk_model() {  # language → model dir name
-  case "$1" in ru) echo vosk-model-ru-0.42 ;; en) echo vosk-model-en-us-0.22 ;; *) echo "" ;; esac
-}
+vosk_model() { lang_field "$1" vosk_model; }  # language → model dir name, "" = no model
 
 fetch_vosk() {  # download + unzip into a temp dir, then move into place, so a half-done model never counts
   local name tmp
   name=$(vosk_model "$1"); [[ -n $name ]] || return 1
   [[ -d $MODELS/$name ]] && return 0
-  log "downloading Vosk model $name (1.8 GB)"
+  log "downloading Vosk model $name (0.3-2 GB, first use only)"
   mkdir -p "$MODELS"; tmp=$(mktemp -d "$MODELS/.tmp.XXXXXX")
   if curl -fL --retry 3 -o "$tmp/m.zip" "https://alphacephei.com/vosk/models/$name.zip" \
       && unzip -q "$tmp/m.zip" -d "$tmp" && [[ -d $tmp/$name ]]; then
@@ -247,11 +253,16 @@ parakeet() {
 }
 gigaam() { "$PY_GIGA" "$LIB/gigaam_run.py" "$@"; }   # audio, out.json [, regions.json]
 vosk() { "$PY" "$LIB/vosk_run.py" "$@"; }            # model dir, audio, out.json
-apple_asr() { "$LIB/apple_asr" "$@"; }               # lang, audio, out.json | --locales
+apple_asr() {  # [--timeout SEC] locale audio out.json | --locales; exit 4 = model download timed out
+  local rc=0; "$APPLE_BIN" "$@" || rc=$?
+  [[ $rc != 4 ]] || warn "Apple SpeechTranscriber: model download for $3 timed out after $2 s"
+  return $rc
+}
 ocr() { "$LIB/ocr" "$@"; }                           # langs, image...
-apple_supports() {  # capture first: "cmd | grep -q" can fail under pipefail when grep exits early
+lang_field() { "$PY" -I "$LIB/languages.py" "$1" "$2"; }  # language, field of lib/languages.py
+apple_supports() {  # locale (de-DE). Capture first: "cmd | grep -q" can fail under pipefail
   local l; l=$(apple_asr --locales 2>/dev/null | sed -n 's/^supported://p' || true)
-  [[ " $l " == *" $1-"* ]]
+  [[ " $l " == *" $1 "* ]]
 }
 
 setup() {
@@ -467,6 +478,7 @@ else
   fi
 fi
 IFS=, read -r -a LANG_LIST <<< "$LANGS"
+OCR_LANGS=$("$PY" -I "$LIB/languages.py" --ocr "$LANGS")  # Vision: the run's languages + English
 MIXED=0; [[ ${#LANG_LIST[@]} -gt 1 ]] && MIXED=1
 [[ $DO_ASR == 1 ]] && log "language: $LANGS$([[ $MIXED == 1 ]] && echo ' (mixed: language-bound engines run once per language)')"
 tag() { if [[ $MIXED == 1 ]]; then echo "$1@$2"; else echo "$1"; fi; }  # whisper-large-v3 or whisper-large-v3@en
@@ -565,7 +577,8 @@ if [[ $DO_ASR == 1 ]]; then
       s=$(tag vosk "$L")
       queue_asr "Vosk [$L] (CPU)" "$OUT/asr/$s.json" "$(vosk_model "$L")" \
         vosk "$MODELS/$(vosk_model "$L")" "$AUDIO" "$OUT/asr/$s.json"
-    else log "Vosk: no model for '$L', skipped"; fi
+    elif [[ -z $(vosk_model "$L") ]]; then log "Vosk: no model for '$L', skipped"
+    else log "Vosk [$L]: model download failed, skipped"; fi
   done
 fi
 if [[ $DO_FRAMES == 1 ]] && has_stream v; then
@@ -603,13 +616,18 @@ if [[ $DO_ASR == 1 ]]; then
     else log "GigaAM: Russian only, skipped"; fi
   fi
   if has parakeet && [[ $MIXED == 0 ]]; then
-    queue_asr "parakeet-tdt-0.6b-v3 [any]" "$OUT/asr/parakeet.json" "$M_PARAKEET" parakeet
+    if [[ $(lang_field "$LANGS" parakeet) == 1 ]]; then
+      queue_asr "parakeet-tdt-0.6b-v3 [any]" "$OUT/asr/parakeet.json" "$M_PARAKEET" parakeet
+    else log "parakeet: no '$LANGS', skipped (25 European languages only)"; fi
   fi
   if has apple && build_swift apple_asr; then
     for L in "${LANG_LIST[@]}"; do
-      s=$(tag apple "$L")
-      if apple_supports "$L"; then queue_asr "Apple SpeechTranscriber [$L]" "$OUT/asr/$s.json" "$L" apple_asr "$L" "$AUDIO" "$OUT/asr/$s.json"
-      else log "Apple SpeechTranscriber: no '$L', skipped"; fi
+      s=$(tag apple "$L"); loc=$(lang_field "$L" apple_locale)
+      if [[ -z $loc ]]; then log "Apple SpeechTranscriber: no '$L', skipped"
+      elif apple_supports "$loc"; then
+        queue_asr "Apple SpeechTranscriber [$L]" "$OUT/asr/$s.json" "$loc" \
+          apple_asr --timeout "$APPLE_TIMEOUT" "$loc" "$AUDIO" "$OUT/asr/$s.json"
+      else log "Apple SpeechTranscriber: no $loc, skipped"; fi
     done
   fi
   for L in "${LANG_LIST[@]}"; do

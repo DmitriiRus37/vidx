@@ -1,8 +1,8 @@
 """Characterisation of the fallback rule: one base segment per 10 s slot, each probing one threshold.
 
 A base (GigaAM) chunk is swapped for the longer parakeet/whisper text over the same span when it
-looks like speech was skipped: < SKIP_CPS chars/s without fillers, the alternative > ALT_RATIO times
-longer and > ALT_MIN_CHARS, and <= LOOP_CPS chars/s. Each probe sits just next to one threshold, so
+looks like speech was skipped: < skip_cps chars/s without fillers, the alternative > ALT_RATIO times
+longer and > ALT_MIN_CHARS, and <= loop_cps chars/s (ru: 6 and 25). Each probe sits just next to one threshold, so
 moving any threshold flips at least one expectation.
 """
 import json

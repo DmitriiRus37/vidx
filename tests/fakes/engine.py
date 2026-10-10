@@ -86,11 +86,16 @@ def main():
         lang = os.path.basename(args[0]).split("-")[2]
         if not canned(os.path.basename(args[2])[:-5], args[2]):
             write(args[2], {"engine": "vosk", "segments": segs([(0.0, duration(args[1]))], f"Fake vosk {lang}.")})
-    elif engine == "apple":  # --locales | lang audio out
-        if args == ["--locales"]:
+    elif engine == "apple":  # --locales | [--timeout s] locale audio out
+        if query:
             print("supported: " + os.environ.get("VIDX_FAKE_APPLE_LOCALES", "en-US de-DE fr-FR"))
             print("installed: en-US")
-        elif not canned(os.path.basename(args[2])[:-5], args[2]):
+            return
+        if args[0] == "--timeout":
+            args = args[2:]
+        if os.environ.get("VIDX_FAKE_APPLE_EXIT"):
+            sys.exit(int(os.environ["VIDX_FAKE_APPLE_EXIT"]))
+        if not canned(os.path.basename(args[2])[:-5], args[2]):
             write(args[2], {"engine": "apple", "segments": segs([(0.0, duration(args[1]))], f"Fake apple {args[0]}.")})
     elif engine == "ocr":  # langs image...
         for p in args[1:]:

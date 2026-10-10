@@ -1,4 +1,4 @@
-# case\_vidx-out
+# case_vidx-out
 
 Languages: ru; language regions: 1; fallbacks to parakeet/whisper: 0  
 Chunks per source: whisper-large-v3 [ru] 10  

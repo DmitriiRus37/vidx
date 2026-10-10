@@ -8,6 +8,7 @@
 #   VIDX_FAKE_LANG     what the fake language detection prints (default ru)
 #   VIDX_FAKE_DATA     dir with canned <output stem>.json / regions.json to return instead of stubs
 #   VIDX_FAKE_APPLE_LOCALES  locales the fake apple_asr --locales lists
+#   VIDX_FAKE_APPLE_EXIT     exit status of the fake apple_asr (4 = model download timed out)
 PY=${VIDX_TEST_PYTHON:-python3}
 FAKE_ENGINE="$VIDX_DIR/tests/fakes/engine.py"
 fake() { "$PY" -I "$FAKE_ENGINE" "$@"; }
@@ -16,7 +17,7 @@ parakeet-mlx() { fake parakeet "$@"; }          # the parakeet-mlx CLI, called b
 mlx_py() { local s; s=$(basename "$1" .py); shift; fake "$s" "$@"; }  # detect_lang.py, regions.py
 gigaam() { fake gigaam "$@"; }
 vosk() { fake vosk "$@"; }
-apple_asr() { fake apple "$@"; }
+APPLE_BIN=fake_apple; fake_apple() { fake apple "$@"; }  # the binary: apple_asr() runs for real
 ocr() { fake ocr "$@"; }
 build_swift() { return 0; }
 fetch_vosk() { [[ -n $(vosk_model "$1") ]]; }   # models "exist" for every language that has one
