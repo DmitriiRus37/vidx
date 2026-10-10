@@ -1,0 +1,23 @@
+# installed by `vidx setup`
+.venv/
+.venv-giga/
+models/
+lib/ocr
+lib/apple_asr
+__pycache__/
+*.pyc
+
+# outputs: transcripts and frames of your recordings
+*_vidx-out/
+vidx-out/
+
+# private glossaries: keep only example.txt in the repo
+glossaries/*
+!glossaries/example.txt
+
+.DS_Store
+
+# editors
+.idea/
+.vscode/
+.ruff_cache/
