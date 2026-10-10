@@ -19,59 +19,73 @@ from common import dump_json, is_silent, load_segments, read_wav
 
 GAP_S = 1.0
 
-src, langs, audio, model, out = sys.argv[1], sys.argv[2].split(","), sys.argv[3], sys.argv[4], sys.argv[5]
-other = next((lang for lang in langs if lang != "ru"), langs[0])
-sents = load_segments(src)
-sr, x = read_wav(audio)
-dur = len(x) / sr
 
-
-def script(text, prev):
+def script_label(text, prev, langs):
+    """ru for mostly Cyrillic text, the first non-ru language for Latin, prev without letters."""
+    other = next((lang for lang in langs if lang != "ru"), langs[0])
     cyr, lat = len(re.findall(r"[А-Яа-яЁё]", text)), len(re.findall(r"[A-Za-z]", text))
     if not (cyr or lat):
         return prev
     return "ru" if cyr >= lat and "ru" in langs else other
 
 
-def detect(a, b, prev):
-    clip = x[int(a * sr):int(b * sr)]
-    if len(clip) < sr or is_silent(clip):
-        return None  # no label: the gap is split between its neighbours
-    import mlx_whisper
+def label_sentences(sents, langs, dur, detect):
+    """Sentences [(start, end, text)] → pieces [(start, end, lang or None)] covering 0..dur.
+    detect(a, b, prev) labels a gap longer than GAP_S (None = no label); shorter gaps get None."""
+    pieces, prev, t = [], langs[0], 0.0
+    for s0, e0, text in sents:
+        if s0 - t > GAP_S:
+            pieces.append((t, s0, detect(t, s0, prev)))
+        elif s0 > t:
+            pieces.append((t, s0, None))
+        prev = script_label(text, prev, langs)
+        pieces.append((s0, e0, prev))
+        t = e0
+    if dur > t:
+        pieces.append((t, dur, None))
+    return pieces
 
-    lang = mlx_whisper.transcribe(clip, path_or_hf_repo=model, verbose=None).get("language")
-    return lang if lang in langs else prev
+
+def merge_pieces(pieces, langs):
+    """Unlabelled pieces are split in half between their neighbours; equal neighbours join."""
+    labelled = []
+    for i, (a, b, lang) in enumerate(pieces):
+        if lang is not None:
+            labelled.append((a, b, lang))
+            continue
+        left = next((p[2] for p in reversed(pieces[:i]) if p[2]), None)
+        right = next((p[2] for p in pieces[i + 1:] if p[2]), None)
+        m = (a + b) / 2
+        labelled += [(a, m, left or right or langs[0]), (m, b, right or left or langs[0])]
+    regions = []
+    for a, b, lang in labelled:
+        if b <= a:
+            continue
+        if regions and regions[-1]["lang"] == lang:
+            regions[-1]["end"] = round(b, 2)
+        else:
+            regions.append({"start": round(a, 2), "end": round(b, 2), "lang": lang})
+    return regions
 
 
-pieces, prev, t = [], langs[0], 0.0  # (start, end, lang or None)
-for s0, e0, text in sents:
-    if s0 - t > GAP_S:
-        pieces.append((t, s0, detect(t, s0, prev)))
-    elif s0 > t:
-        pieces.append((t, s0, None))
-    prev = script(text, prev)
-    pieces.append((s0, e0, prev))
-    t = e0
-if dur > t:
-    pieces.append((t, dur, None))
+def main():
+    src, langs, audio, model, out = sys.argv[1], sys.argv[2].split(","), sys.argv[3], sys.argv[4], sys.argv[5]
+    sr, x = read_wav(audio)
 
-labelled = []
-for i, (a, b, lang) in enumerate(pieces):
-    if lang is not None:
-        labelled.append((a, b, lang))
-        continue
-    left = next((p[2] for p in reversed(pieces[:i]) if p[2]), None)
-    right = next((p[2] for p in pieces[i + 1:] if p[2]), None)
-    m = (a + b) / 2
-    labelled += [(a, m, left or right or langs[0]), (m, b, right or left or langs[0])]
+    def detect(a, b, prev):
+        clip = x[int(a * sr):int(b * sr)]
+        if len(clip) < sr or is_silent(clip):
+            return None  # no label: the gap is split between its neighbours
+        import mlx_whisper
 
-regions = []
-for a, b, lang in labelled:
-    if b <= a:
-        continue
-    if regions and regions[-1]["lang"] == lang:
-        regions[-1]["end"] = round(b, 2)
-    else:
-        regions.append({"start": round(a, 2), "end": round(b, 2), "lang": lang})
-dump_json(regions, out)
-print("  regions: " + ", ".join(f"{r['lang']} {r['start']:.1f}-{r['end']:.1f}s" for r in regions), file=sys.stderr)
+        lang = mlx_whisper.transcribe(clip, path_or_hf_repo=model, verbose=None).get("language")
+        return lang if lang in langs else prev
+
+    regions = merge_pieces(label_sentences(load_segments(src), langs, len(x) / sr, detect), langs)
+    dump_json(regions, out)
+    print("  regions: " + ", ".join(f"{r['lang']} {r['start']:.1f}-{r['end']:.1f}s" for r in regions),
+          file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()

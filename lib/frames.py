@@ -24,27 +24,20 @@ CHANGED_LEVEL, CHANGED_SHARE = 25, 0.01
 DARK_LEVEL, CONTENT_SHARE = 45, 0.02  # crop: a row/column is content if > 2 % of it is brighter than 45
 SHEET_COLS, SHEET_FRAMES, TILE_W, TILE_H = 4, 20, 480, 270
 
-raw_dir, log, out_dir = sys.argv[1:4]
-thr, roi, crop = float(sys.argv[4]), float(sys.argv[5]), sys.argv[6] == "1"
 
-with open(log, errors="replace") as f:
-    times = [float(m.group(1)) for line in f if " n:" in line and (m := re.search(r"pts_time:\s*([\d.]+)", line))]
-raw = sorted(f for f in os.listdir(raw_dir) if f.endswith(".jpg"))
-if len(times) != len(raw):
-    print(f"  warn: {len(raw)} frames vs {len(times)} timestamps", file=sys.stderr)
-
-
-def signature(im):
+def signature(im, roi):
+    """Grey 240x135 thumbnail, only the left roi fraction of it."""
     a = np.asarray(im.convert("L").resize(THUMB), dtype=np.float32)
     return a[:, :max(1, int(THUMB[0] * roi))]
 
 
-def duplicate(s, p):
+def duplicate(s, p, thr):
+    """True if two signatures show the same picture: small mean difference AND few changed pixels."""
     d = np.abs(s - p)
     return d.mean() < thr and (d > CHANGED_LEVEL).mean() < CHANGED_SHARE
 
 
-def cropped(im):
+def cropped(im, roi):
     a = np.asarray(im.convert("RGB")).astype(int)[:, :int(im.width * roi)]
     bright = a.mean(2) > DARK_LEVEL
     rows = np.where(bright.mean(1) > CONTENT_SHARE)[0]
@@ -54,41 +47,55 @@ def cropped(im):
     return im.crop((int(cols[0]), int(rows[0]), int(cols[-1]) + 1, int(rows[-1]) + 1))
 
 
-uniq = os.path.join(out_dir, "unique")
-os.makedirs(uniq, exist_ok=True)
-kept, sigs, used = [], [], set()
-for name, t in zip(raw, times, strict=False):  # mismatch already warned about above
-    with Image.open(os.path.join(raw_dir, name)) as im:
-        s = signature(im)
-        if any(duplicate(s, p) for p in sigs[-LOOKBACK:]):
-            continue
-        out, k = hms(t, "-") + ".jpg", 1
-        while out in used:  # several kept frames within one second
-            out, k = f"{hms(t, '-')}_{k}.jpg", k + 1
-        used.add(out)
-        (cropped(im) if crop else im).convert("RGB").save(os.path.join(uniq, out), quality=90)
-    kept.append({"file": out, "t": round(t, 2)})
-    sigs.append(s)
+def main():
+    raw_dir, log, out_dir = sys.argv[1:4]
+    thr, roi, crop = float(sys.argv[4]), float(sys.argv[5]), sys.argv[6] == "1"
 
-sheets = os.path.join(out_dir, "sheets")
-os.makedirs(sheets, exist_ok=True)
-try:
-    font = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial Bold.ttf", 22)
-except OSError:
-    font = ImageFont.load_default()
-for p in range(0, len(kept), SHEET_FRAMES):
-    chunk = kept[p:p + SHEET_FRAMES]
-    sheet = Image.new("RGB", (SHEET_COLS * TILE_W, ((len(chunk) + SHEET_COLS - 1) // SHEET_COLS) * TILE_H), "black")
-    draw = ImageDraw.Draw(sheet)
-    for i, k in enumerate(chunk):
-        with Image.open(os.path.join(uniq, k["file"])) as im:
-            tile = im.convert("RGB")
-        tile.thumbnail((TILE_W, TILE_H))
-        x, y = (i % SHEET_COLS) * TILE_W, (i // SHEET_COLS) * TILE_H
-        sheet.paste(tile, (x, y))
-        draw.rectangle([x, y, x + 112, y + 28], fill="red")
-        draw.text((x + 4, y + 2), hms(k["t"]), font=font, fill="white")
-    sheet.save(os.path.join(sheets, f"sheet-{p // SHEET_FRAMES + 1:02d}.jpg"), quality=80)
+    with open(log, errors="replace") as f:
+        times = [float(m.group(1)) for line in f if " n:" in line and (m := re.search(r"pts_time:\s*([\d.]+)", line))]
+    raw = sorted(f for f in os.listdir(raw_dir) if f.endswith(".jpg"))
+    if len(times) != len(raw):
+        print(f"  warn: {len(raw)} frames vs {len(times)} timestamps", file=sys.stderr)
 
-dump_json(kept, os.path.join(out_dir, "frames.json"))
-print(f"  frames: {len(raw)} raw -> {len(kept)} unique", file=sys.stderr)
+    uniq = os.path.join(out_dir, "unique")
+    os.makedirs(uniq, exist_ok=True)
+    kept, sigs, used = [], [], set()
+    for name, t in zip(raw, times, strict=False):  # mismatch already warned about above
+        with Image.open(os.path.join(raw_dir, name)) as im:
+            s = signature(im, roi)
+            if any(duplicate(s, p, thr) for p in sigs[-LOOKBACK:]):
+                continue
+            out, k = hms(t, "-") + ".jpg", 1
+            while out in used:  # several kept frames within one second
+                out, k = f"{hms(t, '-')}_{k}.jpg", k + 1
+            used.add(out)
+            (cropped(im, roi) if crop else im).convert("RGB").save(os.path.join(uniq, out), quality=90)
+        kept.append({"file": out, "t": round(t, 2)})
+        sigs.append(s)
+
+    sheets = os.path.join(out_dir, "sheets")
+    os.makedirs(sheets, exist_ok=True)
+    try:
+        font = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial Bold.ttf", 22)
+    except OSError:
+        font = ImageFont.load_default()
+    for p in range(0, len(kept), SHEET_FRAMES):
+        chunk = kept[p:p + SHEET_FRAMES]
+        sheet = Image.new("RGB", (SHEET_COLS * TILE_W, ((len(chunk) + SHEET_COLS - 1) // SHEET_COLS) * TILE_H), "black")
+        draw = ImageDraw.Draw(sheet)
+        for i, k in enumerate(chunk):
+            with Image.open(os.path.join(uniq, k["file"])) as im:
+                tile = im.convert("RGB")
+            tile.thumbnail((TILE_W, TILE_H))
+            x, y = (i % SHEET_COLS) * TILE_W, (i // SHEET_COLS) * TILE_H
+            sheet.paste(tile, (x, y))
+            draw.rectangle([x, y, x + 112, y + 28], fill="red")
+            draw.text((x + 4, y + 2), hms(k["t"]), font=font, fill="white")
+        sheet.save(os.path.join(sheets, f"sheet-{p // SHEET_FRAMES + 1:02d}.jpg"), quality=80)
+
+    dump_json(kept, os.path.join(out_dir, "frames.json"))
+    print(f"  frames: {len(raw)} raw -> {len(kept)} unique", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()

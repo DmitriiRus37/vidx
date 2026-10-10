@@ -21,3 +21,4 @@ glossaries/*
 .idea/
 .vscode/
 .ruff_cache/
+.pytest_cache/

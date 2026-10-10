@@ -234,6 +234,26 @@ fetch_vosk() {  # download + unzip into a temp dir, then move into place, so a h
   fi
 }
 
+# Every command that runs a model goes through one of these functions (tests replace them).
+whisper() {  # model, output stem, language, clip timestamps ("" = whole file)
+  local args=(--model "$1" -o "$OUT/asr" --output-name "$2" -f json --verbose False
+              --condition-on-previous-text False --language "$3")
+  [[ -n $PROMPT ]] && args+=(--initial-prompt "$PROMPT")
+  [[ -n $4 ]] && args+=(--clip-timestamps "$4")
+  mlx_whisper "$AUDIO" "${args[@]}"
+}
+parakeet() {
+  parakeet-mlx "$AUDIO" --model "$M_PARAKEET" --output-format json --output-dir "$OUT/asr" --output-template parakeet
+}
+gigaam() { "$PY_GIGA" "$LIB/gigaam_run.py" "$@"; }   # audio, out.json [, regions.json]
+vosk() { "$PY" "$LIB/vosk_run.py" "$@"; }            # model dir, audio, out.json
+apple_asr() { "$LIB/apple_asr" "$@"; }               # lang, audio, out.json | --locales
+ocr() { "$LIB/ocr" "$@"; }                           # langs, image...
+apple_supports() {  # capture first: "cmd | grep -q" can fail under pipefail when grep exits early
+  local l; l=$(apple_asr --locales 2>/dev/null | sed -n 's/^supported://p' || true)
+  [[ " $l " == *" $1-"* ]]
+}
+
 setup() {
   local t pkg
   command -v brew >/dev/null || die "Homebrew is required"
@@ -257,6 +277,13 @@ setup() {
   rm -rf "$t"
   log "setup done"
 }
+
+# --- test hook: VIDX_FAKE_ENGINES=1 swaps the model-running functions above for the stubs in -------
+# tests/fakes/ (canned output after a delay; nothing is downloaded or compiled). Tests only.
+if [[ ${VIDX_FAKE_ENGINES:-} == 1 ]]; then
+  [[ -f $VIDX_DIR/tests/fakes/hook.sh ]] || die "VIDX_FAKE_ENGINES=1 but tests/fakes/hook.sh is missing"
+  source "$VIDX_DIR/tests/fakes/hook.sh"
+fi
 
 # --- commands --------------------------------------------------------------------------------
 [[ $# -gt 0 ]] || { usage; exit 1; }
@@ -489,25 +516,11 @@ run_queue() {
 # --- 4. speech -------------------------------------------------------------------------------
 PROMPT=""
 [[ -n $GLOSSARY ]] && PROMPT=$(sed -n 's/^prompt: *//p' "$GLOSSARY" | head -1)
-whisper() {  # model, output stem, language, clip timestamps ("" = whole file)
-  local args=(--model "$1" -o "$OUT/asr" --output-name "$2" -f json --verbose False
-              --condition-on-previous-text False --language "$3")
-  [[ -n $PROMPT ]] && args+=(--initial-prompt "$PROMPT")
-  [[ -n $4 ]] && args+=(--clip-timestamps "$4")
-  mlx_whisper "$AUDIO" "${args[@]}"
-}
-parakeet() {
-  parakeet-mlx "$AUDIO" --model "$M_PARAKEET" --output-format json --output-dir "$OUT/asr" --output-template parakeet
-}
 clips_of() {  # language → "start,end,start,end" of its regions; "" = whole file; "none" = no region
   [[ $MIXED == 1 ]] || return 0
   "$PY" -I -c 'import json, sys
 r = ["%s,%s" % (x["start"], x["end"]) for x in json.load(open(sys.argv[1])) if x["lang"] == sys.argv[2]]
 print(",".join(r) or "none")' "$OUT/regions.json" "$1"
-}
-apple_supports() {  # capture first: "cmd | grep -q" can fail under pipefail when grep exits early
-  local l; l=$("$LIB/apple_asr" --locales 2>/dev/null | sed -n 's/^supported://p' || true)
-  [[ " $l " == *" $1-"* ]]
 }
 single_language() {  # mixed split impossible → carry on with the first language
   warn "$1: continuing with '${LANG_LIST[0]}' only"
@@ -551,7 +564,7 @@ if [[ $DO_ASR == 1 ]]; then
     if fetch_vosk "$L"; then
       s=$(tag vosk "$L")
       queue_asr "Vosk [$L] (CPU)" "$OUT/asr/$s.json" "$(vosk_model "$L")" \
-        "$PY" "$LIB/vosk_run.py" "$MODELS/$(vosk_model "$L")" "$AUDIO" "$OUT/asr/$s.json"
+        vosk "$MODELS/$(vosk_model "$L")" "$AUDIO" "$OUT/asr/$s.json"
     else log "Vosk: no model for '$L', skipped"; fi
   done
 fi
@@ -575,7 +588,7 @@ if [[ $DO_FRAMES == 1 ]] && has_stream v; then
       files=("$OUT"/frames/unique/*.jpg)
       echo "OCR (Apple Vision, $OCR_LANGS) on ${#files[@]} frames" >&2
       mkdir -p "$OUT/ocr"
-      if [[ -e ${files[0]} ]]; then "$LIB/ocr" "$OCR_LANGS" "${files[@]}" > "$OUT/ocr/ocr.tmp" || return 1
+      if [[ -e ${files[0]} ]]; then ocr "$OCR_LANGS" "${files[@]}" > "$OUT/ocr/ocr.tmp" || return 1
       else : > "$OUT/ocr/ocr.tmp"; fi
       mv "$OUT/ocr/ocr.tmp" "$OUT/ocr/ocr.jsonl"; stamp "$OUT/ocr/ocr.jsonl" "$OCR_LANGS"
     fi
@@ -586,7 +599,7 @@ if [[ $DO_ASR == 1 ]]; then
   if has gigaam; then
     if [[ ",$LANGS," == *,ru,* ]]; then
       GIGA_ARGS=("$AUDIO" "$OUT/asr/gigaam.json"); [[ $MIXED == 1 ]] && GIGA_ARGS+=("$OUT/regions.json")
-      queue_asr "GigaAM-v3 [ru]" "$OUT/asr/gigaam.json" "v3_e2e_rnnt $REGIONS" "$PY_GIGA" "$LIB/gigaam_run.py" "${GIGA_ARGS[@]}"
+      queue_asr "GigaAM-v3 [ru]" "$OUT/asr/gigaam.json" "v3_e2e_rnnt $REGIONS" gigaam "${GIGA_ARGS[@]}"
     else log "GigaAM: Russian only, skipped"; fi
   fi
   if has parakeet && [[ $MIXED == 0 ]]; then
@@ -595,7 +608,7 @@ if [[ $DO_ASR == 1 ]]; then
   if has apple && build_swift apple_asr; then
     for L in "${LANG_LIST[@]}"; do
       s=$(tag apple "$L")
-      if apple_supports "$L"; then queue_asr "Apple SpeechTranscriber [$L]" "$OUT/asr/$s.json" "$L" "$LIB/apple_asr" "$L" "$AUDIO" "$OUT/asr/$s.json"
+      if apple_supports "$L"; then queue_asr "Apple SpeechTranscriber [$L]" "$OUT/asr/$s.json" "$L" apple_asr "$L" "$AUDIO" "$OUT/asr/$s.json"
       else log "Apple SpeechTranscriber: no '$L', skipped"; fi
     done
   fi
