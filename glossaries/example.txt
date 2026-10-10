@@ -1,0 +1,15 @@
+# Example glossary for vidx -g. Copy it and put your own domain terms in.
+#   prompt: <text>            → whisper --initial-prompt: teaches whisper how terms are spelled
+#   <regex> => <replacement>  → applied to the merged transcript (Python re;
+#                               <W> and <E> are word boundaries that also work next to Cyrillic)
+prompt: Созвон команды разработки: Kubernetes, Helm, Kafka, PostgreSQL, Grafana, Prometheus, CI/CD, staging, prod, деплой, релиз, инцидент.
+
+# Russian ASR engines often spell English tech words in Cyrillic or garble them:
+<W>[Кк]убер(нетес)?<E> => Kubernetes
+<W>[Хх]елм(а|е|ом)?<E> => Helm
+<W>[Кк]афк(а|и|е|у|ой)<E> => Kafka
+<W>[Пп]остгр[еэ]с\w*<E> => PostgreSQL
+<W>[Гг]рафан(а|ы|е|у|ой)<E> => Grafana
+\b(Graphana|Grafanna)\b => Grafana
+<W>[Пп]рометеус<E> => Prometheus
+\bCI ?CD\b => CI/CD
