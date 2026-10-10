@@ -37,6 +37,33 @@ def is_silent(clip):
     return len(clip) == 0 or float(np.sqrt((clip ** 2).mean())) < SILENCE_RMS
 
 
+FRAME_S = 0.03  # loudness frame of the pause cutter
+
+
+def pause_cuts(x, sr, lo_s, hi_s):
+    """Cut audio at pauses: measure the loudness of every FRAME_S frame, cut at the quietest frame
+    lo_s..hi_s after the previous cut, repeat. → [(start, end)] sample ranges covering all of x.
+    Used by GigaAM (14-22 s chunks) and the language regions (2-8 s pieces)."""
+    import numpy as np
+
+    fr = int(FRAME_S * sr)
+    n = len(x) // fr
+    e = np.sqrt((x[:n * fr].reshape(n, fr) ** 2).mean(1) + 1e-12)
+    pts, i = [0], 0
+    while True:
+        lo, hi = i + int(lo_s / FRAME_S), i + int(hi_s / FRAME_S)
+        if hi >= n:
+            pts.append(n)
+            break
+        j = lo + int(np.argmin(e[lo:hi]))
+        pts.append(j)
+        i = j
+    res = [(a * fr, b * fr) for a, b in zip(pts, pts[1:], strict=False)]
+    if res:
+        res[-1] = (res[-1][0], len(x))  # the tail after the last whole frame
+    return res
+
+
 def dump_json(obj, path):
     with open(path, "w") as f:
         json.dump(obj, f, ensure_ascii=False, indent=1)

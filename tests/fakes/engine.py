@@ -102,10 +102,10 @@ def main():
             print(json.dumps({"file": os.path.basename(p), "text": f"Fake OCR {args[0]}"}))
     elif engine == "detect_lang":
         print(os.environ.get("VIDX_FAKE_LANG", "ru"))
-    elif engine == "regions":  # parakeet.json langs audio model out
-        langs, out = args[1].split(","), args[4]
+    elif engine == "regions":  # langs audio model out [parakeet.json]
+        langs, out = args[0].split(","), args[3]
         if not canned("regions", out):
-            d = duration(args[2])
+            d = duration(args[1])
             write(out, [{"start": round(i * d / len(langs), 2), "end": round((i + 1) * d / len(langs), 2), "lang": la}
                         for i, la in enumerate(langs)])
     else:

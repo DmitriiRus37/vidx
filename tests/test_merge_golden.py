@@ -1,8 +1,8 @@
 """Characterisation tests: fixed engine outputs → the transcript merge.py makes today.
 
 ru_en is the real ru+en+ru test video (asr/ from an actual run, trimmed to start/end/text);
-ru is the same video run as Russian only. A diff here means merge behaviour changed: update the
-golden files deliberately with VIDX_UPDATE_GOLDENS=1 and review the diff.
+ru is the same video run as Russian only; mix3 is a real three-language run. A diff here means merge
+behaviour changed: update the golden files deliberately with VIDX_UPDATE_GOLDENS=1 and review the diff.
 """
 import pytest
 from helpers import check_golden, out_dir_from, run_merge
@@ -14,6 +14,8 @@ CASES = {
     "ru_en_regions": ("merge/ru_en", ["--langs", "ru,en", "--sources", RU_EN_SOURCES]),
     "ru_en_cut": ("merge/ru_en", ["--langs", "ru,en", "--sources", RU_EN_SOURCES, "--cut", "17.84-30.4"]),
     "repeats": ("merge/repeats", ["--langs", "ru"]),
+    # real run of mix3 (uk 0-6.2, en 6.2-11.4, de 11.4-16.1 s): each region from its own @lang source
+    "mix3": ("merge/mix3", ["--langs", "uk,en,de"]),
 }
 
 

@@ -6,7 +6,6 @@ regions.json (mixed-language runs): only the "ru" regions are transcribed, cut s
 chunk crosses a language switch (GigaAM turns English speech into Latin-letter gibberish).
 out.json: {"engine": "gigaam", "segments": [{"start", "end", "text"}]}
 """
-import itertools
 import json
 import os
 import sys
@@ -14,22 +13,9 @@ import tempfile
 
 import numpy as np
 import soundfile as sf
+from common import pause_cuts
 
-
-def cuts(x, sr=16000):
-    fr = int(0.03 * sr)
-    n = len(x) // fr
-    e = np.sqrt((x[:n * fr].reshape(n, fr) ** 2).mean(1) + 1e-12)
-    pts, i = [0], 0
-    while True:
-        lo, hi = i + int(14 / 0.03), i + int(22 / 0.03)
-        if hi >= n:
-            pts.append(n)
-            break
-        j = lo + int(np.argmin(e[lo:hi]))
-        pts.append(j)
-        i = j
-    return [(a * fr, b * fr) for a, b in itertools.pairwise(pts)]
+CHUNK_MIN_S, CHUNK_MAX_S = 14, 22  # GigaAM refuses audio longer than 25 s
 
 
 def main():
@@ -46,10 +32,7 @@ def main():
             spans = [(int(r["start"] * sr), min(len(x), int(r["end"] * sr))) for r in json.load(f) if r["lang"] == "ru"]
     chunks = []
     for s0, s1 in spans:
-        part = [(s0 + a, s0 + b) for a, b in cuts(x[s0:s1], sr)]
-        if part:  # the tail after the last whole frame
-            part[-1] = (part[-1][0], s1)
-        chunks += part
+        chunks += [(s0 + a, s0 + b) for a, b in pause_cuts(x[s0:s1], sr, CHUNK_MIN_S, CHUNK_MAX_S)]
     res, spoken, failed = [], 0, 0
     with tempfile.TemporaryDirectory() as td:
         tmp = os.path.join(td, "c.wav")

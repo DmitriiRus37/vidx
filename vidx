@@ -63,7 +63,8 @@ options; -f redoes everything. Full description: ${VIDX_DIR}/README.md
 INPUT / OUTPUT
   -o, --out DIR          output dir (default ./<file name | video id>_vidx-out).
                          An existing non-empty dir not made by vidx is refused.
-  -l, --lang LIST        auto (default) | ru | en | ru,en | other whisper codes
+  -l, --lang LIST        auto (default) | ru | en | ru,en | uk,en,de | any
+                         whisper language codes
       --max-height N     YouTube download resolution cap (default 1080)
       --sub-langs LIST   YouTube subtitle tracks (default: ru, en, --lang
                          languages and the video's language, originals only)
@@ -71,19 +72,24 @@ INPUT / OUTPUT
 
 LANGUAGE
   auto     whisper turbo detects 10 s clips, one per minute (5..30). A language
-           counts if it wins at least 2 clips and 20 % of them; no speech at
-           all → ru. Result cached in lang.txt.
+           counts if it wins at least 2 clips and 20 % of them (any number of
+           languages), so auto finds only languages with long passages: pass
+           -l for short switches. No speech at all → ru. Cached in lang.txt.
   ru       one language: whisper, turbo, Apple and Vosk are told it, GigaAM
            runs (ru only), parakeet is never told a language and runs only
            for its 25 European languages (elsewhere it writes gibberish).
-  ru,en    mixed speech (whole passages in each language). parakeet runs
-           first; its sentences, labelled Cyrillic vs Latin, split the audio
-           into regions (gaps get whisper's language detection) → regions.json.
-           whisper/turbo run once per language on that language's regions only,
-           GigaAM on the ru regions only; output files get @lang
-           (whisper-large-v3@en). Without this whisper would translate and
-           GigaAM would garble the other language. If parakeet fails, the run
-           continues with the first language only.
+  ru,en    mixed speech (whole passages in each language), any number of
+  uk,en,de languages, also with the same script (ru,uk  de,fr). The audio is
+           cut at pauses into 2-8 s pieces, whisper turbo identifies the
+           language of each (among the listed ones), short or unsure pieces
+           follow their neighbours, regions are at least 3 s → regions.json.
+           parakeet runs first if it knows every listed language, and the
+           boundaries snap to its sentence edges. whisper, turbo, Vosk and
+           Apple run once per language that got a region (whisper/turbo on
+           its regions only), GigaAM on the ru regions only; output files get
+           @lang (whisper-large-v3@en). Without this whisper would translate
+           and GigaAM would garble the other language. If the split fails, the
+           run continues with the first language only.
            Russian with English jargon is NOT mixed: use -l ru.
 
 SPEECH
@@ -539,20 +545,26 @@ single_language() {  # mixed split impossible → carry on with the first langua
   LANGS=${LANG_LIST[0]}; LANG_LIST=("$LANGS"); MIXED=0
 }
 
-# Mixed speech: parakeet (no language forced) runs first, then regions.py splits the audio into
-# single-language regions. whisper/turbo @L then transcribe only the L regions (--clip-timestamps),
+# Mixed speech: regions.py splits the audio into single-language regions by whisper turbo's language
+# ID on short pieces; parakeet (no language forced) runs first when enabled and its sentence edges
+# sharpen the boundaries. whisper/turbo @L then transcribe only the L regions (--clip-timestamps),
 # GigaAM only the ru ones; without that whisper translates the other language and GigaAM garbles it.
 if [[ $DO_ASR == 1 && $MIXED == 1 ]]; then
   mkdir -p "$OUT/asr"
-  has parakeet || { ENGINES="$ENGINES,parakeet"; log "mixed speech needs parakeet: added"; }
-  SOURCES=parakeet
-  run_job fg "parakeet-tdt-0.6b-v3 [any]" "$OUT/asr/parakeet.json" "$M_PARAKEET" parakeet
-  if [[ ! -s $OUT/asr/parakeet.json ]]; then
-    single_language "parakeet failed, so mixed speech cannot be split"
-  elif fresh "$OUT/regions.json" "$LANGS"; then
-    log "splitting into language regions"
-    if mlx_py "$LIB/regions.py" "$OUT/asr/parakeet.json" "$LANGS" "$AUDIO" "$M_TURBO" "$OUT/regions.tmp"; then
-      mv "$OUT/regions.tmp" "$OUT/regions.json"; stamp "$OUT/regions.json" "$LANGS"
+  REGION_ARGS=("$LANGS" "$AUDIO" "$M_TURBO" "$OUT/regions.tmp")
+  PK_ALL=1; for L in "${LANG_LIST[@]}"; do [[ $(lang_field "$L" parakeet) == 1 ]] || PK_ALL=0; done
+  if has parakeet && [[ $PK_ALL == 0 ]]; then
+    log "parakeet: not every language of $LANGS is one of its 25, skipped"
+  elif has parakeet; then
+    SOURCES=parakeet
+    run_job fg "parakeet-tdt-0.6b-v3 [any]" "$OUT/asr/parakeet.json" "$M_PARAKEET" parakeet
+    [[ -s $OUT/asr/parakeet.json ]] && REGION_ARGS+=("$OUT/asr/parakeet.json")
+  fi
+  REGION_PARAMS="$LANGS lid ${#REGION_ARGS[@]}"  # 5 args = snapped to parakeet
+  if fresh "$OUT/regions.json" "$REGION_PARAMS"; then
+    log "splitting into language regions (whisper turbo language ID)"
+    if mlx_py "$LIB/regions.py" "${REGION_ARGS[@]}"; then
+      mv "$OUT/regions.tmp" "$OUT/regions.json"; stamp "$OUT/regions.json" "$REGION_PARAMS"
     else
       single_language "language split failed"
     fi
@@ -573,7 +585,8 @@ if [[ $DO_ASR == 1 ]]; then
   done
   for L in "${LANG_LIST[@]}"; do
     has vosk || break
-    if fetch_vosk "$L"; then
+    if [[ $(clips_of "$L") == none ]]; then log "Vosk [$L]: no $L regions, skipped"
+    elif fetch_vosk "$L"; then
       s=$(tag vosk "$L")
       queue_asr "Vosk [$L] (CPU)" "$OUT/asr/$s.json" "$(vosk_model "$L")" \
         vosk "$MODELS/$(vosk_model "$L")" "$AUDIO" "$OUT/asr/$s.json"
@@ -610,7 +623,8 @@ if [[ $DO_FRAMES == 1 ]] && has_stream v; then
 fi
 if [[ $DO_ASR == 1 ]]; then
   if has gigaam; then
-    if [[ ",$LANGS," == *,ru,* ]]; then
+    if [[ ",$LANGS," == *,ru,* && $(clips_of ru) == none ]]; then log "GigaAM [ru]: no ru regions, skipped"
+    elif [[ ",$LANGS," == *,ru,* ]]; then
       GIGA_ARGS=("$AUDIO" "$OUT/asr/gigaam.json"); [[ $MIXED == 1 ]] && GIGA_ARGS+=("$OUT/regions.json")
       queue_asr "GigaAM-v3 [ru]" "$OUT/asr/gigaam.json" "v3_e2e_rnnt $REGIONS" gigaam "${GIGA_ARGS[@]}"
     else log "GigaAM: Russian only, skipped"; fi
@@ -624,6 +638,7 @@ if [[ $DO_ASR == 1 ]]; then
     for L in "${LANG_LIST[@]}"; do
       s=$(tag apple "$L"); loc=$(lang_field "$L" apple_locale)
       if [[ -z $loc ]]; then log "Apple SpeechTranscriber: no '$L', skipped"
+      elif [[ $(clips_of "$L") == none ]]; then log "Apple SpeechTranscriber [$L]: no $L regions, skipped"
       elif apple_supports "$loc"; then
         queue_asr "Apple SpeechTranscriber [$L]" "$OUT/asr/$s.json" "$loc" \
           apple_asr --timeout "$APPLE_TIMEOUT" "$loc" "$AUDIO" "$OUT/asr/$s.json"

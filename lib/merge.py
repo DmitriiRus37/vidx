@@ -13,6 +13,9 @@ parakeet/whisper over the same span (their segments at least SPAN_INSIDE inside 
 speech was skipped: fewer than skip_cps chars/s without fillers, the alternative more than ALT_RATIO
 times longer, longer than ALT_MIN_CHARS and at most loop_cps chars/s (guards against repetition loops).
 skip_cps and loop_cps come from the region language's row in languages.py (they depend on the script).
+Each chunk is then cleaned with the same row: its hesitation sounds removed (fillers), the glossary
+applied, sentences capitalised (any cased alphabet); chunks are joined with the row's joiner ("" for
+Chinese and Japanese).
 
 Sources and their language: gigaam = ru, parakeet = any of its 25 languages (none is forced; on other
 languages it outputs gibberish), "<engine>@<lang>" = that language (mixed runs), youtube-<kind>@<lang>
