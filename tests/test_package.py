@@ -3,6 +3,7 @@ import os
 import shutil
 import subprocess
 import tomllib
+from pathlib import Path
 
 import pytest
 from helpers import ROOT, VIDX, VIDX_CMD
@@ -22,7 +23,7 @@ def test_importable_from_src():
     import vidx
 
     assert (ROOT / "src" / "vidx" / "lib" / "merge.py").exists()
-    assert vidx.__file__.startswith(str(ROOT / "src" / "vidx"))
+    assert Path(vidx.__file__).resolve().is_relative_to((ROOT / "src" / "vidx").resolve())
 
 
 @pytest.mark.parametrize("args, code, first", [

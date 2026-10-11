@@ -1,4 +1,5 @@
 """The engine registry (vidx.engines): one program per engine and platform, the same arguments everywhere."""
+import os
 from pathlib import PureWindowsPath
 
 import pytest
@@ -12,7 +13,8 @@ def test_darwin_runs_mlx_and_the_swift_helpers():
     assert reg.get("whisper").program == ["mlx_whisper"] and reg.get("whisper").model.startswith("mlx-community/")
     assert reg.get("turbo").model == "mlx-community/whisper-large-v3-turbo"
     assert reg.get("parakeet").program == ["parakeet-mlx"]
-    assert reg.get("apple").program == ["/h/bin/apple_asr"] and reg.get("ocr").program == ["/h/bin/ocr"]
+    assert reg.get("apple").program == [os.path.join("/h", "bin", "apple_asr")]
+    assert reg.get("ocr").program == [os.path.join("/h", "bin", "ocr")]
     assert reg.lid.model == "mlx-community/whisper-large-v3-turbo"
 
 
@@ -77,7 +79,7 @@ def test_default_run_per_platform(tmp_path, platform):
 
 def test_rapidocr_models_live_in_home():
     reg = Registry("linux", "/h")
-    assert reg.get("ocr").env == {"VIDX_RAPIDOCR_MODELS": "/h/models/rapidocr"}
+    assert reg.get("ocr").env == {"VIDX_RAPIDOCR_MODELS": os.path.join("/h", "models", "rapidocr")}
     assert Registry("darwin", "/h").get("ocr").env == {}
 
 

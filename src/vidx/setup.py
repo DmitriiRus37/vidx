@@ -192,8 +192,11 @@ def run(args=(), rt=None):
     rt = rt or Runtime()
     plan = Plan(rt.platform, rt.home, gpu=opts["gpu"], registry=rt.registry, models=opts["models"])
     print(f"platform: {rt.platform}, home: {rt.home}")
-    print("NVIDIA GPU: " + (", ".join(plan.gpus) if plan.gpus else "none")
-          + f"; torch: {plan.torch}; onnxruntime: {plan.onnx}" + ("" if rt.platform != "darwin" else " (MLX on macOS)"))
+    if rt.platform == "darwin":
+        print("GPU: Apple (MLX engines; GigaAM on MPS)")
+    else:
+        print("NVIDIA GPU: " + (", ".join(plan.gpus) if plan.gpus else "none")
+              + f"; torch: {plan.torch}; onnxruntime: {plan.onnx}")
     if plan.missing:
         print(f"missing: {', '.join(plan.missing)}; install with:")
         for c in plan.install_commands():

@@ -44,7 +44,7 @@ def test_unknown_code_gets_whisper_only_defaults():
 def test_cli_prints_one_field():
     def cli(*args):
         return subprocess.run([sys.executable, "-I", str(LIB / "languages.py"), *args], capture_output=True,
-                              text=True, check=True).stdout.strip()
+                              text=True, encoding="utf-8", check=True).stdout.strip()
 
     assert cli("de", "apple_locale") == "de-DE"
     assert cli("be", "apple_locale") == ""  # None → empty
@@ -58,14 +58,15 @@ def test_cli_prints_several_fields():
     """vidx reads all it needs about a language in one call: values joined by |, empty ones kept."""
     def cli(*args):
         return subprocess.run([sys.executable, "-I", str(LIB / "languages.py"), *args], capture_output=True,
-                              text=True, check=True).stdout
+                              text=True, encoding="utf-8", check=True).stdout
 
     assert cli("be", "parakeet", "apple_locale", "vosk_model") == "0||\n"
     assert cli("de", "parakeet", "apple_locale", "vosk_model") == "1|de-DE|vosk-model-de-0.21\n"
 
 
 def test_cli_rejects_unknown_field():
-    r = subprocess.run([sys.executable, "-I", str(LIB / "languages.py"), "ru", "nope"], capture_output=True, text=True)
+    r = subprocess.run([sys.executable, "-I", str(LIB / "languages.py"), "ru", "nope"], capture_output=True, text=True,
+                       encoding="utf-8")
     assert r.returncode == 2
 
 
@@ -111,5 +112,5 @@ def test_ocr_groups_one_request_per_script(codes, groups):
 
 def test_cli_ocr_argument():
     r = subprocess.run([sys.executable, "-I", str(LIB / "languages.py"), "--ocr", "ru,zh"], capture_output=True,
-                       text=True, check=True)
+                       text=True, encoding="utf-8", check=True)
     assert r.stdout.strip() == "ru-RU,en-US;zh-Hans,en-US"

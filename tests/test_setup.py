@@ -121,3 +121,9 @@ def test_existing_venv_kept_broken_one_rebuilt(tmp_path):
 def test_tmp_placeholder():
     step = setup.Step("warm", ["ffmpeg", "-i", "x", "<tmp>/s.wav"])
     assert setup.argv_of(step, "/t") == ["ffmpeg", "-i", "x", "/t/s.wav"]
+
+
+def test_dry_run_on_macos_names_apple_gpu(tmp_path):
+    r = run_vidx("setup", "--dry-run", tmp_path=tmp_path, env={"VIDX_FAKE_PLATFORM": "darwin"})
+    assert r.returncode == 0, r.stderr
+    assert "GPU: Apple (MLX engines; GigaAM on MPS)" in r.stdout and "NVIDIA" not in r.stdout

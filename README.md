@@ -2,9 +2,9 @@
 
 **English** · [Русский](README_RUS.md)
 
-Extract pictures and text from a video file or a YouTube (any yt-dlp) URL. It runs every local speech
-recognizer available on Apple Silicon, OCRs the screen, and merges everything into one transcript.
-Everything runs on the Mac; audio and video are never uploaded.
+Extract pictures and text from a video file or a YouTube (any yt-dlp) URL. It runs several local speech
+recognizers, OCRs the screen, and merges everything into one transcript. Everything runs on your computer
+(macOS, Linux or Windows); audio and video are never uploaded.
 
 Built for long Russian-language meeting recordings with screen sharing. It is tuned for 12 languages
 (ru, en, de, fr, it, es, ja, zh, hi, be, uk, ar), works for any other language whisper knows, and
@@ -18,8 +18,10 @@ vidx find meeting_vidx-out 'kubernetes|helm'       # phrase → timecode
 vidx help run                                      # every option
 ```
 
-Requirements: macOS 26+ on Apple Silicon (MLX, SpeechTranscriber), Homebrew, Xcode command line tools
-(`swiftc`). To call it from anywhere: `ln -s "$PWD/vidx" ~/.local/bin/vidx` (any directory on `PATH`).
+Platforms: macOS 26+ on Apple Silicon, Linux (x86_64, arm64) and Windows 10/11 (x86_64), natively (no WSL);
+an NVIDIA GPU is used on Linux and Windows when there is one. The same commands, options and output files
+everywhere; the engines behind them differ per platform ([Platforms](#platforms)). Install:
+[Installation](#installation).
 
 ## How it works
 
@@ -48,7 +50,8 @@ starts over.
 
 ### 1. Source
 
-- **Local file**: symlinked as `source.<ext>`, never copied.
+- **Local file**: symlinked as `source.<ext>`, never copied. Where the OS refuses symlinks (Windows
+  without Developer Mode) vidx reads the file in place and says so.
 - **URL**: yt-dlp downloads the video (≤ 1080p, `--max-height`), `info.json` (title, chapters,
   language), `description.txt` and `thumbnail.jpg`. Playlist URLs are reduced to the one video; yt-dlp
   config files are ignored (`--ignore-config`).
@@ -71,10 +74,10 @@ message; `--no-asr` skips steps 2–4 and gives pictures and OCR only.
 ### 3. Language
 
 `--lang` takes `auto`, one language (`ru`) or a list of any length (`ru,en`, `uk,en,de`). Repeated
-codes are dropped. Every language has one row in [lib/languages.py](lib/languages.py); see
+codes are dropped. Every language has one row in [languages.py](src/vidx/lib/languages.py); see
 [Languages](#languages).
 
-`auto` ([lib/detect_lang.py](lib/detect_lang.py)): whisper turbo identifies the language of evenly
+`auto` ([detect_lang.py](src/vidx/lib/detect_lang.py)): whisper turbo identifies the language of evenly
 spaced 10 s clips, one per minute of audio (5 to 30 clips). The most frequent language is always kept;
 another one only if it wins at least 2 clips **and** 20 % of them, so a single misidentified clip does
 not make a video mixed. No speech at all → `ru`. The result is cached in `lang.txt`. Short videos and
@@ -86,13 +89,13 @@ glossary. Mixed means whole passages in different languages.
 
 **Language regions (mixed runs only).** Engines that are told a language misbehave on the other
 ones: whisper `--language en` *translates* Russian speech into English, GigaAM turns English speech
-into Latin-letter gibberish. So before the job queue [lib/regions.py](lib/regions.py) splits the
+into Latin-letter gibberish. So before the job queue [regions.py](src/vidx/lib/regions.py) splits the
 audio into single-language regions → `regions.json` (`[{start, end, lang}]`):
 
 1. **Pieces**: the audio is cut in the middle of every pause; pieces shorter than 2 s join the
    neighbour behind the shorter pause (the longer pause is the likelier switch), pieces longer than
    8 s are cut again at their quietest points.
-2. **Language ID per piece** ([lib/lid.py](lib/lid.py), whisper turbo): the probability of every
+2. **Language ID per piece** ([lid.py](src/vidx/lib/lid.py), whisper turbo): the probability of every
    listed language, renormalised over the list. It listens to the audio, not to the letters of a
    transcript, so it works for any number of languages and for same-script pairs (ru/uk, de/fr).
 3. **Smoothing**: a piece shorter than 2 s or with less than 60 % for its top language follows its
@@ -107,7 +110,9 @@ audio into single-language regions → `regions.json` (`[{start, end, lang}]`):
 
 Results on test clips (macOS TTS voices): uk → en → de gave three regions whose boundaries (6.1 s,
 11.3 s) fall in the middle of the pauses at the two switches; ru → uk and de → fr are within 0.15 s of
-the switch. If the split fails, the run continues with the first language only.
+the switch. On Linux (faster-whisper, even with the tiny model) the uk → en → de and ru → en → ru
+boundaries came out within 0.25 s of the macOS ones. If the split fails, the run continues with the first
+language only.
 
 ### 4. Speech engines (job queue)
 
@@ -118,22 +123,28 @@ the language run once per language that got a region and get an `@lang` suffix
 (`--clip-timestamps`), GigaAM only the Russian regions. Vosk and Apple run on the whole file; the
 merge ignores their output outside their language.
 
-| Engine | Model | Language | Runs on | Notes |
-|---|---|---|---|---|
-| whisper | whisper-large-v3 (mlx-whisper) | forced, once per language | GPU | glossary prompt, `--condition-on-previous-text False` against repetition loops |
-| vosk | Kaldi vosk-model-&lt;lang&gt; | once per language with a model | CPU | models fetched on first use (0.3–1.9 GB each); about real time |
-| gigaam | GigaAM-v3 e2e_rnnt (Sber) | Russian only | GPU (MPS) | see below |
-| parakeet | parakeet-tdt-0.6b-v3 (parakeet-mlx) | its 25 European languages, never told which | GPU | its own 120 s chunking; on other languages it writes romanised gibberish, so it does not run there; in mixed runs it runs first and its sentence edges refine the regions |
-| apple | macOS SpeechTranscriber | once per supported language, explicit locale (de → de-DE) | Neural Engine | no Russian; downloads its model per locale on first use, given `VIDX_APPLE_TIMEOUT` seconds (default 300, at most 86400) |
-| turbo | whisper-large-v3-turbo | forced, once per language | GPU | backup for whisper |
+| Engine | Model | Language | Notes |
+|---|---|---|---|
+| whisper | whisper-large-v3 | forced, once per language | glossary prompt, `--condition-on-previous-text False` against repetition loops |
+| vosk | Kaldi vosk-model-&lt;lang&gt; | once per language with a model | CPU; models fetched on first use (0.3–1.9 GB each); about real time |
+| gigaam | GigaAM-v3 e2e_rnnt (Sber) | Russian only | see below |
+| parakeet | parakeet-tdt-0.6b-v3 | its 25 European languages, never told which | on other languages it writes romanised gibberish, so it does not run there; in mixed runs it runs first and its sentence edges refine the regions |
+| apple | macOS SpeechTranscriber | once per supported language, explicit locale (de → de-DE) | macOS only; no Russian; downloads its model per locale on first use, given `VIDX_APPLE_TIMEOUT` seconds (default 300, at most 86400) |
+| turbo | whisper-large-v3-turbo | forced, once per language | backup for whisper |
 
-**GigaAM** refuses audio longer than 25 s, so [lib/gigaam_run.py](lib/gigaam_run.py) cuts the audio
+Which program runs each engine depends on the platform ([Platforms](#platforms)); the output files and
+their JSON are the same everywhere. `VIDX_MODEL_WHISPER`, `VIDX_MODEL_TURBO` (also used for language ID),
+`VIDX_MODEL_PARAKEET` and `VIDX_VOSK_<LANG>` (e.g. `VIDX_VOSK_RU=vosk-model-small-ru-0.22`) replace a
+model, e.g. on a machine without a GPU.
+
+**GigaAM** refuses audio longer than 25 s, so [gigaam_run.py](src/vidx/lib/gigaam_run.py) cuts the audio
 itself: measure the loudness of every 30 ms frame, cut at the quietest frame 14–22 s after the
 previous cut, repeat; silent chunks are skipped and each chunk is transcribed on its own. In mixed
 runs it cuts each Russian region separately, so no chunk crosses a language switch. A chunk that fails
-is skipped; if all of them fail the engine counts as failed.
+is skipped; if all of them fail the engine counts as failed. It runs on an NVIDIA GPU (CUDA), else on the
+Apple GPU (MPS), else on the CPU (`VIDX_GIGAAM_DEVICE` forces one).
 
-**Vosk** ([lib/vosk_run.py](lib/vosk_run.py)) streams the audio in 0.5 s pieces and stores a segment
+**Vosk** ([vosk_run.py](src/vidx/lib/vosk_run.py)) streams the audio in 0.5 s pieces and stores a segment
 each time Kaldi closes an utterance.
 
 **Parallel runs.** `-j N` runs up to N jobs at a time (default 1, one after another). The queue is
@@ -141,17 +152,19 @@ ordered so GPU and CPU work interleave: whisper (GPU) · vosk (CPU) · frames + 
 parakeet · apple · turbo. So `-j 2` already overlaps the slowest GPU and CPU jobs, and `-j 3` adds
 the frames. With `-j > 1` each job's output goes to `logs/<job>.log` and the terminal only shows
 start / done / failure (with the last lines of the log). In mixed runs parakeet and the region split
-run before the queue, because GigaAM and whisper need the regions. Ctrl-C stops every running job.
+run before the queue, because GigaAM and whisper need the regions. Ctrl-C (Ctrl-Break on Windows) stops
+every running job together with the processes it started.
 
 A failed job does not stop the run: the rest is merged, the failures are listed at the end and vidx
 exits with status 3.
 
 Memory is the limit: whisper large-v3 needs about 4 GB, Vosk ru about 6 GB of RAM, parakeet and turbo
-2–3 GB each, GigaAM about 1 GB. On a 24 GB Mac `-j 3` is comfortable, on 16 GB use `-j 2`.
+2–3 GB each, GigaAM about 1 GB. On a 24 GB machine `-j 3` is comfortable, on 16 GB use `-j 2`.
 
 ### 5. Frames and OCR (job queue)
 
-One job, [lib/frames.py](lib/frames.py) and [lib/ocr.swift](lib/ocr.swift):
+One job, [frames.py](src/vidx/lib/frames.py) and the OCR helper ([ocr.swift](src/vidx/lib/ocr.swift) on
+macOS, [ocr_rapid.py](src/vidx/lib/ocr_rapid.py) elsewhere):
 
 1. **Capture**: a single ffmpeg pass keeps a frame when the scene changes by more than `--scene`
    (0.3) or when `--every` seconds (10) passed since the last kept frame. ffmpeg's `showinfo`
@@ -165,15 +178,22 @@ One job, [lib/frames.py](lib/frames.py) and [lib/ocr.swift](lib/ocr.swift):
    non-dark pixels, which is the shared screen.
 4. **Save**: `frames/unique/HH-MM-SS.jpg` (`_1`, `_2` … for several frames in one second), contact
    sheets of 20 frames in `frames/sheets/`, and `frames/frames.json` (file → timestamp) last.
-5. **OCR**: Apple Vision (accurate mode, language correction) on every kept frame →
-   `ocr/ocr.jsonl`, for the run's languages plus English (be → ru + uk, which Vision reads). Vision
-   reads only the script of a request's first language, so each script (Latin/Cyrillic, CJK, Arabic,
-   Devanagari) gets its own request and the lines are merged by position. No model download, about
-   0.2 s per frame and script. New frames always mean new OCR.
+5. **OCR** on every kept frame → `ocr/ocr.jsonl`, for the run's languages plus English (be → ru + uk).
+   - macOS: Apple Vision (accurate mode, language correction). Vision reads only the script of a
+     request's first language, so each script (Latin/Cyrillic, CJK, Arabic, Devanagari) gets its own
+     request and the lines are merged by position. No model download, about 0.2 s per frame and script.
+   - Linux, Windows: RapidOCR (PP-OCRv5 recognisers on onnxruntime, ~10 MB per script, downloaded on
+     first use into `models/rapidocr/`). The same script groups map to its models (eslav for
+     Russian/Ukrainian/Belarusian, latin, ch for Chinese and Japanese, arabic, devanagari, korean); where
+     two models read the same line, the one whose text is in its own script wins. Known gap: Devanagari
+     (hindi) titles are not detected; Cyrillic letters that look Latin are sometimes read as Latin.
+
+   New frames always mean new OCR. Contact-sheet labels use Arial Bold on macOS and Pillow's built-in
+   font elsewhere.
 
 ### 6. Merge
 
-[lib/merge.py](lib/merge.py) reads the `asr/*.json` files made by this run (files from earlier runs
+[merge.py](src/vidx/lib/merge.py) reads the `asr/*.json` files made by this run (files from earlier runs
 with other options are ignored), `subs/*.json3`, the OCR results and `info.json`.
 
 Every source has a language: `gigaam` = ru, `parakeet` = any of its 25, `<engine>@<lang>` and
@@ -219,7 +239,7 @@ Also written: `transcript.txt` (one `[HH:MM:SS] text` line per chunk, not escape
 
 ### `vidx find`
 
-[lib/find.py](lib/find.py) runs a case-insensitive regex over every engine's segments and the OCR
+[find.py](src/vidx/lib/find.py) runs a case-insensitive regex over every engine's segments and the OCR
 lines and prints `HH:MM:SS  source  text`, so you can jump to a phrase in the video. A third
 argument limits it to one source (`gigaam`, `whisper-large-v3@en`, `ocr`, …).
 
@@ -241,11 +261,11 @@ Only `example.txt` is tracked by git; put your own glossaries next to it.
 
 ## Languages
 
-One row per language in [lib/languages.py](lib/languages.py): script, Apple locale, OCR languages,
+One row per language in [languages.py](src/vidx/lib/languages.py): script, Apple locale, OCR languages,
 Vosk model, whether parakeet knows it, joiner, hesitation sounds and the merge thresholds. A code
 outside the table (any other whisper language) gets whisper-only defaults for its script.
 
-| Language | whisper, turbo | parakeet | GigaAM | Apple ASR | Vosk model | OCR (Vision) |
+| Language | whisper, turbo | parakeet | GigaAM | Apple ASR (macOS) | Vosk model | OCR (Vision locale) |
 |---|---|---|---|---|---|---|
 | ru | ✓ | ✓ | ✓ | – | ru-0.42 | ru-RU |
 | en | ✓ | ✓ | – | en-US | en-us-0.22 | en-US |
@@ -257,7 +277,7 @@ outside the table (any other whisper language) gets whisper-only defaults for it
 | be | ✓ | – | – | – | – | via ru-RU + uk-UA |
 
 Tested on short macOS TTS clips: auto-detection and transcripts were correct for de, fr, it, es, ja,
-zh, hi, uk and ar. **Belarusian** has no TTS voice and is covered only by unit tests; only whisper and
+zh, hi, uk and ar (macOS). **Belarusian** has no TTS voice and is covered only by unit tests; only whisper and
 turbo support it, so expect the lowest quality. The thresholds were calibrated on TTS speech, which is
 cleaner and faster than real meetings; Russian keeps the values tuned on real recordings.
 
@@ -280,24 +300,106 @@ cleaner and faster than real meetings; Russian keeps the values tuned on real re
 Exit status: 0 everything worked, 3 some jobs failed (the rest is merged), 1 usage or setup error,
 130 interrupted.
 
+## Platforms
+
+The pipeline, options, output files and their formats are the same on every platform. Each engine is a
+program with the same command line on every OS (see [engines.py](src/vidx/engines.py)); what runs it:
+
+| Engine | macOS (Apple Silicon) | Linux, Windows |
+|---|---|---|
+| whisper, turbo | mlx-whisper (Apple GPU) | faster-whisper (CTranslate2): NVIDIA GPU with CUDA 12 (float16), else CPU (int8) |
+| language ID (auto, mixed) | whisper turbo, mlx-whisper | whisper turbo, faster-whisper |
+| parakeet | parakeet-mlx (Apple GPU) | onnx-asr + Silero VAD: CUDA, DirectML (Windows, on request) or CPU (int8) |
+| gigaam | PyTorch on MPS | PyTorch on CUDA or CPU |
+| apple | SpeechTranscriber (Neural Engine) | not available: skipped with a message, not a failure |
+| vosk | Kaldi (CPU) | Kaldi (CPU) |
+| OCR | Apple Vision | RapidOCR (onnxruntime, CPU) |
+
+Different backends of one model family give slightly different text; the merge thresholds were tuned on
+macOS output. `vidx setup` reports the device each engine will use. On a machine without an NVIDIA GPU the
+engines run on the CPU: expect whisper large-v3 to be slow there, and consider
+`VIDX_MODEL_WHISPER=large-v3-turbo`.
+
+What was validated where (2026-10-11):
+
+| | macOS (Apple Silicon) | Linux (container, arm64, CPU) | Windows |
+|---|---|---|---|
+| unit + CLI tests (fake engines) | ✓ Python 3.11, 3.14 | ✓ Python 3.11, 3.13 | not run yet (CI is ready) |
+| real engine tests (`-m real`) | ✓ | ✓ with small models | not run |
+| whole runs on the test clips | ✓ same files as the bash version | ✓ | not run |
+| `vidx setup` | dry run | ✓ (`--no-models`) | not run |
+| NVIDIA GPU | — | not available here | not run |
+
+Windows support is written and unit-tested with a simulated platform but has never run on Windows;
+the checklist for a first real run is in [docs/plans/2026-10-11-porting-analysis.md](docs/plans/2026-10-11-porting-analysis.md).
+
 ## Installation
 
-`vidx setup` installs or upgrades, then downloads every model once. Re-running it is safe.
+vidx itself needs only Python 3.11+ and [uv](https://docs.astral.sh/uv/); `vidx setup` makes the engines'
+environments. It checks for ffmpeg (with ffprobe), deno (the JavaScript runtime yt-dlp needs for
+YouTube) and uv, and prints the command that installs a missing one; it never runs a package manager
+itself.
 
-| Where | What |
-|---|---|
-| Homebrew | ffmpeg, deno (yt-dlp needs a JS runtime for YouTube), uv |
-| `uv tool` | mlx-whisper 0.4.3, parakeet-mlx 0.5.3, yt-dlp (latest: YouTube breaks old versions) |
-| `.venv` (Python 3.14) | vosk, pillow, numpy (pinned) |
-| `.venv-giga` (Python 3.13) | GigaAM at a pinned commit, torch, torchaudio, soundfile (pinned) |
-| `lib/` | `ocr`, `apple_asr` compiled from Swift |
-| `models/` | vosk-model-ru-0.42 (the other languages' models are fetched on first use) |
-| Hugging Face cache | whisper-large-v3, whisper-large-v3-turbo, parakeet-tdt-0.6b-v3 |
-| `~/.cache/gigaam` | GigaAM v3_e2e_rnnt |
+**macOS** (from a clone; Xcode command line tools for `swiftc`):
 
-The Python code runs on 3.11–3.14. GigaAM needs onnxruntime 1.23, which has no Python 3.14 build, so
-its venv uses 3.13. `VIDX_PYTHON` / `VIDX_PYTHON_GIGA` override the versions; delete `.venv` or
-`.venv-giga` to rebuild one. The script runs under bash 5 and the macOS `/bin/bash` 3.2.
+```bash
+brew install ffmpeg deno uv
+git clone https://github.com/DmitriiRus37/vidx && cd vidx
+./vidx setup                                  # ~13 GB of models
+ln -s "$PWD/vidx" ~/.local/bin/vidx           # call it from anywhere (any directory on PATH)
+```
+
+**Linux** (Debian/Ubuntu; Fedora: `sudo dnf install ffmpeg-free`, or full ffmpeg from RPM Fusion):
+
+```bash
+sudo apt install ffmpeg
+curl -fsSL https://deno.land/install.sh | sh
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv tool install git+https://github.com/DmitriiRus37/vidx     # or, in a clone: uv tool install -e .
+vidx setup
+```
+
+**Windows** (PowerShell; open a new terminal after the installs):
+
+```powershell
+winget install --id Gyan.FFmpeg -e
+winget install --id DenoLand.Deno -e
+winget install --id astral-sh.uv -e
+uv tool install git+https://github.com/DmitriiRus37/vidx
+uv tool update-shell
+vidx setup
+```
+
+A clone also works on Linux with `./vidx` (the launcher), like on macOS. `vidx setup --dry-run` shows
+what it would do; `--no-models` skips the model downloads; `--gpu cuda|directml|cpu` overrides the GPU
+choice (default: CUDA builds when `nvidia-smi` finds an NVIDIA GPU).
+
+What `vidx setup` installs (re-running it is safe; existing venvs are kept, a venv whose Python is gone
+is rebuilt; delete one to rebuild it):
+
+| Where | macOS | Linux, Windows |
+|---|---|---|
+| `uv tool` | mlx-whisper 0.4.3, parakeet-mlx 0.5.3, yt-dlp | yt-dlp (latest: YouTube breaks old versions) |
+| `.venv` (Python 3.14) | vosk, pillow, numpy, psutil (pinned) | same |
+| `.venv-giga` (Python 3.13) | GigaAM at a pinned commit, torch, torchaudio, soundfile | same; torch from PyTorch's CPU or CUDA 12.6 index |
+| `.venv-whisper` (Python 3.13) | — | faster-whisper, CTranslate2, RapidOCR, onnxruntime |
+| `.venv-onnx` (Python 3.13) | — | onnx-asr with onnxruntime (CPU), onnxruntime-gpu (CUDA 12) or onnxruntime-directml |
+| `bin/` | `ocr`, `apple_asr` compiled from Swift | — |
+| `models/` | vosk-model-ru-0.42 (the other languages' models are fetched on first use) | same, plus `rapidocr/` |
+| Hugging Face cache | whisper-large-v3, whisper-large-v3-turbo, parakeet-tdt-0.6b-v3 (MLX) | the faster-whisper and ONNX versions |
+| `~/.cache/gigaam` | GigaAM v3_e2e_rnnt | same |
+
+These live in the **vidx home**: the clone when vidx runs from one, else `~/Library/Application
+Support/vidx`, `~/.local/share/vidx` (or `$XDG_DATA_HOME/vidx`) or `%LOCALAPPDATA%\vidx`; `VIDX_HOME`
+overrides it. `.venv` and `.venv-giga` are two environments because GigaAM needs onnxruntime 1.23, which
+has no Python 3.14 build; `.venv-whisper` and `.venv-onnx` are two because faster-whisper requires the CPU
+onnxruntime, which would overwrite the GPU one. `VIDX_PYTHON`, `VIDX_PYTHON_GIGA` and
+`VIDX_PYTHON_ENGINES` override the Python versions.
+
+**NVIDIA GPU on Linux and Windows.** faster-whisper needs the CUDA 12 runtime with cuBLAS (Linux: the
+CUDA toolkit or the `nvidia-cublas-cu12` package; Windows: the CUDA 12 toolkit, or the cuBLAS DLLs on
+`PATH`); without them it says so and runs on the CPU. torch and onnxruntime-gpu bring their own CUDA
+libraries. `VIDX_WHISPER_DEVICE`, `VIDX_ONNX_PROVIDER` and `VIDX_GIGAAM_DEVICE` force a device.
 
 Models are downloaded from their publishers and come under their own licenses; check them before
 using the output commercially. The Vosk zips are fetched over HTTPS without a checksum (none is
@@ -311,39 +413,55 @@ on each run (`HF_HUB_OFFLINE=1` skips it).
 Tests are written first (TDD) and need no models by default:
 
 ```bash
-uv run --isolated --group test pytest                       # unit tests, ~1 min, no models or network
+uv run --isolated --group test pytest                       # unit + CLI tests, ~1.5 min, no models or network
 uv run --isolated --group test --python 3.11 pytest         # the oldest supported Python
-HF_HUB_OFFLINE=1 uv run --isolated --group test pytest -m real   # real models (macOS, after vidx setup)
-uvx ruff check lib/ tests/
+HF_HUB_OFFLINE=1 uv run --isolated --group test pytest -m real   # real models (after vidx setup)
+uvx ruff check src/ tests/
+sh -n vidx                                                  # the POSIX launcher
 ```
 
 - `--isolated` keeps uv from installing into `.venv`, which is vidx's own helper environment.
-- **Fake engines**: with `VIDX_FAKE_ENGINES=1` the script loads `tests/fakes/hook.sh`, which swaps the
-  model calls for `tests/fakes/engine.py`. That writes canned output, so the job queue, stamps,
-  resume, `-j`, failures and Ctrl-C are tested end to end in seconds. The end-to-end tests run the
-  script under the macOS `/bin/bash` 3.2.
+- **Fake engines**: with `VIDX_FAKE_ENGINES=1` vidx loads `tests/fakes/hook.py`, which swaps every
+  engine's program for `tests/fakes/engine.py` (same command line, canned output), so the job queue,
+  stamps, resume, `-j`, failures and Ctrl-C are tested end to end in seconds. `VIDX_FAKE_PLATFORM`
+  (darwin, linux, win32) gives a run the engines of another platform; the Windows-only code paths
+  (process groups, `Scripts\python.exe`, no symlinks, code pages) are tested that way and natively on
+  the Windows CI runner.
 - **Goldens**: `tests/golden/` holds expected transcripts; `VIDX_UPDATE_GOLDENS=1` rewrites them after
   a deliberate change (review the diff).
-- **Fixtures**: short TTS clips and engine outputs in `tests/fixtures/` (under 400 KB each).
-- The plan for the next steps (Linux and Windows) is in [docs/plans/](docs/plans/).
+- **Fixtures**: short TTS clips, rendered slides and engine outputs in `tests/fixtures/` (under 400 KB
+  each).
+- **CI** ([.github/workflows](.github/workflows)): `ci.yml` runs ruff and the test suite on macOS, Linux
+  and Windows with Python 3.11 and 3.14; `smoke.yml` (nightly, manual) runs `vidx setup` and the real
+  engines with small models on Linux and Windows.
+- Text files are UTF-8 with LF on every OS: every `open()` names its encoding and newline (a test checks).
+- Plans and the porting analysis: [docs/plans/](docs/plans/).
 
 ## Files
 
 ```
-vidx                  entry point (bash): options, download, audio, language, job queue
-lib/languages.py      everything vidx knows per language, one table
-lib/lid.py            spoken-language ID of a clip (the one backend-specific module)
-lib/detect_lang.py    --lang auto: votes over 10 s clips
-lib/regions.py        mixed speech → single-language regions
-lib/common.py         helpers shared by the Python scripts
-lib/gigaam_run.py     GigaAM on pause-cut chunks
-lib/vosk_run.py       Vosk
-lib/apple_asr.swift   Apple SpeechTranscriber (+ --locales, --timeout)
-lib/frames.py         frame dedup, crop, contact sheets
-lib/ocr.swift         Apple Vision OCR, one request per script
-lib/merge.py          aligned.md, transcript.md/.txt, ocr.md
-lib/find.py           phrase → timecode
-glossaries/example.txt  glossary format
-tests/                pytest suite, fake engines, fixtures, goldens
-docs/plans/           implementation plans
+vidx                     POSIX launcher for a clone (macOS, Linux): runs the package in src/
+src/vidx/cli.py          commands, exit status        options.py   run options (vidx help run)
+src/vidx/pipeline.py     source, audio, language, regions, job queue, merge
+src/vidx/engines.py      which program runs each engine, per platform
+src/vidx/jobs.py         job queue, process groups, Ctrl-C     state.py  output folder, stamps
+src/vidx/setup.py        vidx setup        install.py  pinned packages        paths.py  vidx home
+src/vidx/lib/            scripts run by the engines' interpreters:
+  languages.py           everything vidx knows per language, one table
+  lid.py                 spoken-language ID of a clip (mlx-whisper or faster-whisper)
+  detect_lang.py         --lang auto: votes over 10 s clips
+  regions.py             mixed speech → single-language regions
+  whisper_fw.py          whisper on Linux/Windows (faster-whisper, mlx_whisper's command line)
+  parakeet_onnx.py       parakeet on Linux/Windows (onnx-asr, parakeet-mlx's command line)
+  gigaam_run.py          GigaAM on pause-cut chunks
+  vosk_run.py            Vosk
+  apple_asr.swift        Apple SpeechTranscriber (+ --locales, --timeout)
+  frames.py              frame dedup, crop, contact sheets
+  ocr.swift, ocr_rapid.py  OCR: Apple Vision / RapidOCR, one pass per script
+  merge.py               aligned.md, transcript.md/.txt, ocr.md
+  find.py                phrase → timecode
+  common.py              helpers shared by the scripts
+glossaries/example.txt   glossary format
+tests/                   pytest suite, fake engines, fixtures, goldens
+docs/plans/              implementation plans, porting analysis
 ```

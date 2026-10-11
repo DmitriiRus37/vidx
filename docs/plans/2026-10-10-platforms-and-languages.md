@@ -2,7 +2,9 @@
 
 Status: Phase 0 (without the CI of 0.2), Phase 1 and the language part of Phase 4 are built (branch
 `languages`, 2026-10-11); where the build differs from the plan, the step says so under **As built**.
-Phases 0.2, 2, 3 and 5 are not started. Written 2026-10-10 from a probe run on the current code (commit
+Phases 0.2, 2 and 3 and the validation part of Phase 5 were refined and built on branch `porting`: see
+`2026-10-11-porting-analysis.md` (its section 6 lists the deviations from this plan, section 10 what was
+validated where). Written 2026-10-10 from a probe run on the current code (commit
 `bfb143c`).
 
 ## Goals

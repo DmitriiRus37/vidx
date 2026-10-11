@@ -155,6 +155,8 @@ def ocr_arg(codes):
 
 
 def main():
+    for stream in (sys.stdout, sys.stderr):  # UTF-8 and LF on every OS (Windows: the code page, CRLF)
+        stream.reconfigure(encoding="utf-8", newline="\n")
     if len(sys.argv) == 3 and sys.argv[1] == "--ocr":
         print(ocr_arg(sys.argv[2].split(",")))
         return

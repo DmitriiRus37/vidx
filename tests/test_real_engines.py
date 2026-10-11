@@ -23,9 +23,11 @@ MLX_SEGMENT_KEYS = {"id", "seek", "start", "end", "text", "tokens", "temperature
 
 
 def python_of(engine):
+    """The engine's program; skips where it is not installed, and on macOS for the Linux/Windows backends
+    (GigaAM is the same script everywhere, so it runs on macOS too)."""
     e = REG.get(engine)
-    if e is None or REG.platform == "darwin" or not os.path.exists(e.program[0]):
-        pytest.skip(f"{engine}: no Linux/Windows backend installed here (vidx setup)")
+    if e is None or (REG.platform == "darwin" and engine != "gigaam") or not os.path.exists(e.program[0]):
+        pytest.skip(f"{engine}: backend not installed here (vidx setup)")
     return e.program
 
 
@@ -73,8 +75,7 @@ def test_parakeet_onnx_sentences(tmp_path):
 
 def test_gigaam_on_this_platform(tmp_path):
     prog = python_of("gigaam")
-    subprocess.run([*prog, wav("ru_en.m4a", tmp_path), tmp_path / "gigaam.json"], check=True,
-                   env={**os.environ, "VIDX_GIGAAM_DEVICE": os.environ.get("VIDX_GIGAAM_DEVICE", "cpu")})
+    subprocess.run([*prog, wav("ru_en.m4a", tmp_path), tmp_path / "gigaam.json"], check=True)
     out = json.loads((tmp_path / "gigaam.json").read_text(encoding="utf-8"))
     assert out["engine"] == "gigaam" and "Добрый вечер" in out["segments"][0]["text"]
 
@@ -84,12 +85,17 @@ TITLES = {"ru": "Деплой во вторник", "uk": "Їжак і ґано�
           "ar": "طقس نهاية الأسبوع", "hi": "आज की बैठक", "de": "Größe und Übergabe"}
 
 
-def rapid_ocr(codes, png):
-    import languages
-
+def rapid():
     e = REG.get("ocr")
     if REG.platform == "darwin" or not os.path.exists(e.program[0]):
         pytest.skip("RapidOCR backend not installed here (vidx setup)")
+    return e
+
+
+def rapid_ocr(codes, png):
+    import languages
+
+    e = rapid()
     r = subprocess.run(e.argv(languages.ocr_arg(codes), png), env={**os.environ, **e.env}, capture_output=True,
                        text=True, encoding="utf-8", check=True)
     return json.loads(r.stdout)["text"]
@@ -97,6 +103,7 @@ def rapid_ocr(codes, png):
 
 @pytest.mark.parametrize("lang", sorted(TITLES))
 def test_rapidocr_slide_title(lang):
+    rapid()
     if lang == "hi":
         pytest.xfail("RapidOCR's detectors do not find Devanagari titles (docs/plans/2026-10-11-porting-analysis.md)")
     text = rapid_ocr([lang], FIXTURES / "slides" / f"{lang}.png")

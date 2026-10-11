@@ -1,8 +1,9 @@
 # vidx on Linux and Windows: analysis and step list
 
-Status: written 2026-10-11 on branch `porting` (from `languages`, commit `5c4b82f`), before any port code.
-It refines Phases 0.2, 2, 3 and 5 of `2026-10-10-platforms-and-languages.md` against the code as it is
-now. Section 10 records what was built and validated; it is updated as the steps land.
+Status: written 2026-10-11 on branch `porting` (from `languages`, commit `5c4b82f`), before any port code;
+sections 1-9 are the analysis as written then. It refines Phases 0.2, 2, 3 and 5 of
+`2026-10-10-platforms-and-languages.md` against the code as it was. Section 10 records what was built,
+where the build differs, and what was validated where.
 
 Goal (unchanged): macOS, Linux and native Windows as equal platforms: same CLI, same output files, same
 tests on all three; no WSL and no bash on Windows.
@@ -142,7 +143,7 @@ everywhere, the fake engine and every CLI test are the same on all three platfor
 | `.venv-giga` (3.13) | ✓ | ✓ | GigaAM + torch (PyTorch index: CPU, or CUDA cu126 when an NVIDIA GPU is found) |
 | uv tools | mlx-whisper, parakeet-mlx, yt-dlp | yt-dlp | |
 | `.venv-whisper` (3.13) | — | ✓ | faster-whisper, rapidocr[rtl], onnxruntime (CPU; faster-whisper requires the CPU package for its VAD) |
-| `.venv-onnx` (3.13) | — | ✓ | onnx-asr + one onnxruntime flavour: `onnxruntime-gpu<1.27` (CUDA 12, the same CUDA as CTranslate2), `onnxruntime-directml` (Windows without NVIDIA), else `onnxruntime` |
+| `.venv-onnx` (3.13) | — | ✓ | onnx-asr + one onnxruntime flavour: `onnxruntime-gpu<1.27` (CUDA 12, the same CUDA as CTranslate2), `onnxruntime-directml` (Windows, as built only with `--gpu directml`), else `onnxruntime` |
 
 Why two engine venvs on Linux/Windows: `onnxruntime`, `onnxruntime-gpu` and `onnxruntime-directml` install
 the same `onnxruntime` import package, and faster-whisper depends on the CPU one; keeping the GPU
@@ -451,4 +452,98 @@ Machine: Windows 11 x64, PowerShell. Record results (time per engine, errors) in
 
 ## 10. As built and validated
 
-(Filled in as the steps land.)
+### 10.1 Commits → steps
+
+| Step | Commit(s) |
+|---|---|
+| analysis | `docs: porting analysis for Linux and Windows` |
+| P1 package | `package: src/vidx with a vidx console script; lib/ moves into it` |
+| P2 UTF-8/LF | `text: UTF-8 and LF for every text file vidx reads or writes` |
+| P3 options | `options: the run option loop in Python, message for message` |
+| P4 state, paths | `state: output folder, stamps and paths in Python` |
+| P5 queue, Ctrl-C | `jobs: job queue, process trees and Ctrl-C in Python`; `tests: Ctrl-Break twin of the Ctrl-C test for Windows` |
+| P6 registry + pipeline | `pipeline: the run, find and setup in Python; vidx becomes a launcher` |
+| P7 font | `frames: readable contact-sheet labels without macOS fonts` |
+| P8 whisper | `whisper: faster-whisper backend and language ID for Linux and Windows` |
+| P9 parakeet | `parakeet: onnx-asr backend for Linux and Windows` |
+| P10 GigaAM | `gigaam: device CUDA, then MPS, then CPU` |
+| P11 OCR | `ocr: RapidOCR backend for Linux and Windows` |
+| P12 setup | `setup: per-OS checks, environments, models and device report`; `setup: rebuild a venv whose Python is gone`; `setup: name the Apple GPU on macOS` |
+| (new) | `engines: model overrides for small machines and smoke runs`; `texts: help per platform` |
+| P13 CI | `tests: OS-neutral paths and UTF-8 decoding for Windows`; `ci: GitHub Actions on macOS, Linux and Windows` |
+| P14 validation, docs | `tests: the real GigaAM test runs on macOS too`; `tests: the Apple timeout help is checked in the macOS help`; this section; READMEs and CLAUDE.md |
+
+### 10.2 Where the build differs from sections 1-9
+
+- **RapidOCR merge** (P11): unlike Vision, a RapidOCR recogniser reads other scripts as noise (the eslav
+  model read the Arabic line of the ru+ar slide as `El lb`), so "first pass wins" lost that line. An
+  overlapping line now goes to the pass whose text is more in its own model's script (`own_script`), a
+  tie keeps the earlier pass. The `en` model is used only alone: every other PP-OCRv5 recogniser reads
+  Latin letters too.
+- **DirectML** (P12): opt-in (`--gpu directml`), not the default for Windows without NVIDIA: a VM or a
+  machine without a DirectX 12 GPU would fail parakeet; the CPU always works.
+- **Model overrides** (new): `VIDX_MODEL_WHISPER`, `VIDX_MODEL_TURBO` (language ID follows it),
+  `VIDX_MODEL_PARAKEET`, `VIDX_VOSK_<LANG>` (the old plan's open question 3); used by the smoke job
+  (tiny whisper, small Vosk models) and useful on CPU-only machines.
+- **Help per platform** (new): the macOS help is byte-for-byte unchanged; Linux/Windows name their
+  backends.
+- **Ctrl-C with -j > 1** (P6): leaving a `ThreadPoolExecutor` block waits for its workers, which were
+  blocked on the programs about to be killed; the pool is now shut down without waiting, the trees are
+  killed and vidx exits with `os._exit(130)`.
+- **Broken venvs** (P12, found in the container): a venv whose uv-managed Python was removed is rebuilt
+  with `--clear` instead of failing.
+- **Process-group kill** (P5): psutil reaps the killed parent, so `Popen.wait()` may report 0 afterwards;
+  only liveness is checked.
+- **TDD**: each step started with failing tests, except `log.py` (P4) and the pipeline itself (P6), whose
+  acceptance tests were the existing end-to-end suite (green against bash, red until the port, green
+  after) and whose new unit tests were written alongside.
+
+### 10.3 Validation
+
+**macOS** (this Mac, Apple Silicon, Python 3.14 and 3.11):
+
+- unit + CLI: `499 passed, 2 skipped` (the 2 Windows-only Ctrl-Break tests) on 3.14 and 3.11;
+- real (`HF_HUB_OFFLINE=1`, `-m real`): `29 passed, 13 skipped` (Apple, Vision OCR, regions, GigaAM on MPS;
+  skipped: the Linux/Windows backend tests);
+- no regression: the bash `vidx` of `languages` and the Python `vidx` were run with the real engines on
+  `mix3.m4a -l uk,en,de -e whisper,parakeet,turbo`, `ru_en.m4a -l ru,en` (all engines, Apple en) and
+  `ru_slides.mp4` (auto). Every `asr/*.json` (parsed), `regions.json`, `lang.txt`, `transcript.txt`,
+  `aligned.md`, `ocr.md`, `frames/frames.json`, frame names and `ocr/ocr.jsonl` (parsed) are identical;
+  `transcript.md` differs only in its title line (the output folder name). Raw bytes of `apple@en.json`
+  and `ocr.jsonl` can differ in key order: Swift's `JSONSerialization` orders keys at random (same with
+  the bash version);
+- an output folder made by the bash version is fully reused (every job "cached", no engine run).
+
+**Linux** (Docker Desktop on this Mac, `python:3.13-slim-trixie`, linux/aarch64, CPU only):
+
+- unit + CLI: `498 passed, 3 skipped` on Python 3.13 and 3.11 (skipped: the 2 Windows tests and the
+  Latin-1 locale test; the image has no such locale);
+- `vidx setup --no-models` (uv tool install of the package, real uv environments): passes; device report
+  `whisper, turbo, language ID: cpu int8`, `parakeet: CPUExecutionProvider`, `GigaAM: cpu`;
+- real backends (`pytest -m real tests/test_real_engines.py`, whisper `tiny`): `13 passed, 1 xfailed`
+  (Hindi OCR);
+- whole runs (`VIDX_MODEL_WHISPER=tiny VIDX_MODEL_TURBO=tiny`, small Vosk models): `ru_slides.mp4` →
+  `Привет. Сегодня короткий тест. Второй слайд про погоду.` (GigaAM base), OCR `Tecт vidx` (a Latin
+  look-alike letter; Vision reads `Тест vidx`); `ru_en.m4a -l ru,en` → regions ru 0-17.63, en
+  17.63-30.37, ru (macOS: 17.84, 30.4), transcript in both languages; `mix3.m4a -l uk,en,de` → regions
+  6.14 / 11.26 (macOS: 6.24 / 11.36), `-e apple` → "not available on this platform", exit 0; a second
+  run of ru_en: every job cached; `vidx find` works.
+
+**Windows**: never executed. Covered by unit tests with a simulated platform (process creation flags,
+psutil and taskkill kill paths, SIGBREAK, `Scripts\python.exe`, `%LOCALAPPDATA%`, no-symlink fallback,
+code page and CRLF handling, winget commands, the registry and help), a Ctrl-Break end-to-end test that
+runs only on Windows, and `ci.yml`/`smoke.yml` for `windows-2025`, which have not run (no push from this
+session). Use the checklist of section 9 for the first real run.
+
+**CI**: `actionlint` 1.7.12 (with shellcheck) reports no errors for both workflows; they have never run.
+
+### 10.4 Remaining
+
+1. Push the branch (owner) so that `ci.yml` runs on the three OSes; fix what Windows finds. Run
+   `smoke.yml` manually once.
+2. Section 9 on a real Windows machine (CPU, then NVIDIA), and an NVIDIA run on Linux.
+3. Recalibrate merge thresholds on faster-whisper / onnx-asr output from real recordings.
+4. Hindi OCR on Linux/Windows; Cyrillic look-alike letters in RapidOCR output.
+5. Windows Job Objects (engines die even if vidx crashes) and Vosk with non-ASCII model paths on Windows
+   (a user name in Cyrillic puts `%LOCALAPPDATA%` there; set `VIDX_HOME` to an ASCII path if it fails).
+6. Old plan Phase 5.2 (a real Belarusian recording) is unchanged.

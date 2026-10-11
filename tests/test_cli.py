@@ -97,7 +97,7 @@ def test_ctrl_c_stops_everything(tmp_path, jobs):
 
     p = subprocess.Popen([*VIDX_CMD, str(FIXTURE), "-l", "ru", "-o", "out", "-j", str(jobs)], cwd=tmp_path,
                          env=vidx_env(tmp_path, {"VIDX_FAKE_DELAY": "60"}), start_new_session=True,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, encoding="utf-8",
                          preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
     pids = tmp_path / "fake.log.pids"
     deadline = time.time() + 30
@@ -128,7 +128,8 @@ def test_ctrl_break_stops_everything_on_windows(tmp_path, jobs):
     p = subprocess.Popen([*VIDX_CMD, str(FIXTURE), "-l", "ru", "-o", "out", "-j", str(jobs)], cwd=tmp_path,
                          env=vidx_env(tmp_path, {"VIDX_FAKE_DELAY": "60"}),
                          creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+                         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+                         encoding="utf-8")
     pids = tmp_path / "fake.log.pids"
     deadline = time.time() + 60
     while not (pids.exists() and len(list(pids.iterdir())) >= jobs) and time.time() < deadline:
@@ -168,7 +169,7 @@ def test_apple_timeout_default(tmp_path):
     assert r.returncode == 0, r.stderr
     (call,) = [c for c in fake_calls(tmp_path) if c["engine"] == "apple"]
     assert call["args"][:2] == ["--timeout", "300"]
-    help_run = run_vidx("help", "run", tmp_path=tmp_path).stdout
+    help_run = run_vidx("help", "run", tmp_path=tmp_path, env=DARWIN).stdout  # the Apple engine: macOS help
     assert "VIDX_APPLE_TIMEOUT seconds (default 300, at most 86400)" in help_run
 
 
@@ -347,7 +348,7 @@ def test_fake_hook_defaults_to_the_python_running_vidx(tmp_path):
     env = vidx_env(tmp_path)
     del env["VIDX_TEST_PYTHON"]
     r = subprocess.run([*VIDX_CMD, str(FIXTURE), "-l", "ru", "-o", "out", "-e", "whisper", "--no-frames"],
-                       cwd=tmp_path, env=env, capture_output=True, text=True, timeout=120)
+                       cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8", timeout=120)
     assert r.returncode == 0, r.stderr
 
 
