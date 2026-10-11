@@ -86,7 +86,7 @@ def main():
         lang = os.path.basename(args[0]).split("-")[2]
         if not canned(os.path.basename(args[2])[:-5], args[2]):
             write(args[2], {"engine": "vosk", "segments": segs([(0.0, duration(args[1]))], f"Fake vosk {lang}.")})
-    elif engine == "apple":  # --locales | [--timeout s] locale audio out
+    elif engine == "apple":  # --locales | --timeout s locale audio out
         if query:
             print("supported: " + os.environ.get("VIDX_FAKE_APPLE_LOCALES", "en-US de-DE fr-FR"))
             print("installed: en-US")
@@ -100,12 +100,14 @@ def main():
     elif engine == "ocr":  # langs image...
         for p in args[1:]:
             print(json.dumps({"file": os.path.basename(p), "text": f"Fake OCR {args[0]}"}))
-    elif engine == "detect_lang":
+    elif engine == "lid":  # model: load it (vidx setup)
+        pass
+    elif engine == "detect_lang":  # model audio
         print(os.environ.get("VIDX_FAKE_LANG", "ru"))
-    elif engine == "regions":  # langs audio model out [parakeet.json]
-        langs, out = args[0].split(","), args[3]
+    elif engine == "regions":  # model langs audio out [parakeet.json]
+        langs, out = args[1].split(","), args[3]
         if not canned("regions", out):
-            d = duration(args[1])
+            d = duration(args[2])
             write(out, [{"start": round(i * d / len(langs), 2), "end": round((i + 1) * d / len(langs), 2), "lang": la}
                         for i, la in enumerate(langs)])
     else:

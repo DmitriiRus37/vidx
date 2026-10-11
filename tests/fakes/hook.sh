@@ -1,7 +1,7 @@
-# Sourced by vidx when VIDX_FAKE_ENGINES=1 (tests only). Replaces every function that runs a model,
-# downloads or compiles with tests/fakes/engine.py, which writes canned output. The rest of vidx
-# (options, output dir, stamps, job queue, merge) runs for real. Environment:
-#   VIDX_TEST_PYTHON   Python with numpy + pillow for frames.py / merge.py (default python3)
+# Sourced by vidx when VIDX_FAKE_ENGINES=1 (tests only), after vidx defined its functions. Replaces the
+# commands that run a model, download or compile with tests/fakes/engine.py, which writes canned output.
+# The rest of vidx (options, output dir, stamps, job queue, frames.py, merge) runs for real. Environment:
+#   VIDX_TEST_PYTHON   Python with numpy + pillow, replaces vidx's helper venv (default: python3 on PATH)
 #   VIDX_FAKE_LOG      append one JSON line per fake call: engine, args, start, end
 #   VIDX_FAKE_DELAY    seconds each fake engine takes (default 0)
 #   VIDX_FAKE_FAIL     comma list of fake engines that fail (whisper,turbo,parakeet,gigaam,...)
@@ -9,15 +9,15 @@
 #   VIDX_FAKE_DATA     dir with canned <output stem>.json / regions.json to return instead of stubs
 #   VIDX_FAKE_APPLE_LOCALES  locales the fake apple_asr --locales lists
 #   VIDX_FAKE_APPLE_EXIT     exit status of the fake apple_asr (4 = model download timed out)
-PY=${VIDX_TEST_PYTHON:-python3}
+PY=${VIDX_TEST_PYTHON:-$(command -v python3)}  # vidx's helper venv Python (.venv/bin/python)
 FAKE_ENGINE="$VIDX_DIR/tests/fakes/engine.py"
 fake() { "$PY" -I "$FAKE_ENGINE" "$@"; }
-mlx_whisper() { fake whisper "$@"; }            # the mlx_whisper CLI, called by whisper()
-parakeet-mlx() { fake parakeet "$@"; }          # the parakeet-mlx CLI, called by parakeet()
-mlx_py() { local s; s=$(basename "$1" .py); shift; fake "$s" "$@"; }  # detect_lang.py, regions.py
-gigaam() { fake gigaam "$@"; }
-vosk() { fake vosk "$@"; }
-APPLE_BIN=fake_apple; fake_apple() { fake apple "$@"; }  # the binary: apple_asr() runs for real
-ocr() { fake ocr "$@"; }
-build_swift() { return 0; }
-fetch_vosk() { [[ -n $(vosk_model "$1") ]]; }   # models "exist" for every language that has one
+mlx_whisper() { fake whisper "$@"; }     # the mlx_whisper CLI (called by whisper(): large-v3 and turbo)
+parakeet-mlx() { fake parakeet "$@"; }   # the parakeet-mlx CLI (called by parakeet())
+mlx_py() { local s; s=$(basename "$1" .py); shift; fake "$s" "$@"; }  # mlx-whisper's Python: lid_py's scripts
+gigaam() { fake gigaam "$@"; }           # .venv-giga + gigaam_run.py
+vosk() { fake vosk "$@"; }               # vosk_run.py
+APPLE_BIN=fake_apple; fake_apple() { fake apple "$@"; }  # the lib/apple_asr binary: apple_asr() runs for real
+ocr() { fake ocr "$@"; }                 # the lib/ocr binary
+build_swift() { return 0; }              # swiftc: nothing is compiled
+fetch_vosk() { [[ -n $1 ]]; }           # the model download: every named model "exists"

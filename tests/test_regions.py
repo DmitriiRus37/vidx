@@ -198,7 +198,89 @@ def test_main_warns_when_a_pair_cannot_be_separated(tmp_path, monkeypatch, capsy
     flip = iter([0.55, 0.45] * 10)
     shaky = types.SimpleNamespace(load=lambda model: lambda clip: {"ru": (p := next(flip)), "uk": 1 - p})
     monkeypatch.setitem(sys.modules, "lid", shaky)
-    monkeypatch.setattr(sys, "argv", ["regions.py", "ru,uk", str(path), "turbo", str(tmp_path / "r.json")])
+    monkeypatch.setattr(sys, "argv", ["regions.py", "turbo", "ru,uk", str(path), str(tmp_path / "r.json")])
     regions.main()
     assert "ru/uk could not be separated reliably" in capsys.readouterr().err
     assert json.loads((tmp_path / "r.json").read_text())[0]["start"] == 0
+
+
+def test_pair_warnings_with_one_language():
+    """One listed language (or the same one twice): nothing to tell apart, no crash."""
+    assert pair_warnings([Piece(0, 3, {"ru": 1.0})] * 4, ["ru"]) == []
+
+
+@pytest.mark.parametrize("arg", ["ru,ru", "ru,uk,ru"])
+def test_main_ignores_a_repeated_language(tmp_path, monkeypatch, arg):
+    import json
+    import sys
+    import types
+    import wave
+
+    x = np.concatenate([np.concatenate([tone(200, 2.5), silence(0.4)]) for _ in range(4)])
+    path = tmp_path / "a.wav"
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(SR)
+        w.writeframes((x * 32767).astype(np.int16).tobytes())
+    sure_ru = types.SimpleNamespace(load=lambda model: lambda clip: {"ru": 0.9, "uk": 0.1})
+    monkeypatch.setitem(sys.modules, "lid", sure_ru)
+    monkeypatch.setattr(sys, "argv", ["regions.py", "turbo", arg, str(path), str(tmp_path / "r.json")])
+    regions.main()
+    assert [r["lang"] for r in json.loads((tmp_path / "r.json").read_text())] == ["ru"]
+
+
+def test_one_loudness_measure_for_both_cutters():
+    """pause_cuts (GigaAM) and Pauses (regions) measure the same frames the same way."""
+    from common import FRAME_S, frame_rms
+
+    x = np.concatenate([tone(200, 1), silence(0.5), tone(400, 0.7)])
+    e = frame_rms(x, SR)
+    assert len(e) == len(x) // int(FRAME_S * SR)
+    assert np.array_equal(regions.Pauses(x, SR).e, e)
+    assert e[:30].min() > 0.2 and e[40:45].max() < 1e-5  # tone RMS 0.21, silence ~0
+    assert len(frame_rms(silence(0.01), SR)) == 0
+
+
+def test_top_language():
+    from common import top
+
+    assert top({"ru": 0.2, "uk": 0.7, "be": 0.1}) == "uk"
+
+
+def test_long_but_unsure_piece_follows_its_neighbours():
+    """4 s of en at only 0.55 (below MIN_CONF) between uk pieces is not trusted, though it is long enough
+    to stand as a region of its own."""
+    unsure = Piece(5, 9, {"uk": 0.4, "en": 0.55, "de": 0.05})
+    ps = seq(["uk", "uk"]) + [unsure, piece(9, 11.5, "uk"), piece(11.5, 14, "uk")]
+    assert as_tuples(smooth(ps, ["uk", "en", "de"])) == [("uk", 0, 14)]
+
+
+def test_piece_of_exactly_short_s_is_trusted():
+    ps = seq(["uk", "uk"]) + [piece(5, 7, "en"), piece(7, 9, "en"), piece(9, 11.5, "uk"), piece(11.5, 14, "uk")]
+    assert as_tuples(smooth(ps, ["uk", "en", "de"])) == [("uk", 0, 5.0), ("en", 5.0, 9.0), ("uk", 9.0, 14)]
+
+
+def test_pair_warning_needs_pair_min_pieces():
+    shaky = [Piece(i * 3, i * 3 + 3, {"ru": 0.55, "uk": 0.45}) for i in range(regions.PAIR_MIN_PIECES)]
+    assert regions.PAIR_MIN_PIECES == 3
+    assert pair_warnings(shaky, ["ru", "uk"]) == [("ru", "uk")]
+    assert pair_warnings(shaky[:-1], ["ru", "uk"]) == []  # two unsure pieces prove nothing
+
+
+def unsure_lid(clip):
+    """fake_lid, but a 300 Hz tone is only probably en (0.5 < MIN_CONF)."""
+    spec = np.abs(np.fft.rfft(clip))
+    if abs(np.argmax(spec) * SR / len(clip) - 300) < 50:
+        return {"uk": 0.45, "en": 0.5, "de": 0.05}
+    return fake_lid(clip)
+
+
+def test_boundary_stays_when_the_straddling_part_is_unsure():
+    """As test_boundary_moves_to_the_switch_inside_a_straddling_piece, but the part after the inner pause
+    is en at only 0.5: not enough to move the boundary there."""
+    x = np.concatenate([tone(200, 3), silence(0.5), tone(200, 3), silence(0.25), tone(300, 1.5), silence(0.6),
+                        tone(400, 4)])
+    got = as_tuples(split(x, SR, ["uk", "en"], unsure_lid)[0])
+    assert [g[0] for g in got] == ["uk", "en"]
+    assert got[0][2] == pytest.approx(8.55, abs=0.05)  # the 0.6 s pause, not the 0.25 s one at 6.625

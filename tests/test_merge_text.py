@@ -46,3 +46,28 @@ def test_mixed_zh_en_chunks_keep_a_space_at_the_switch(tmp_path):
                                                   {"start": 6, "end": 12, "lang": "en"}]))
     run_merge(out, "--langs", "zh,en")
     assert paragraph(out) == "今天我们聊一聊天气。星期六天气晴朗温暖。 Now in English. Second sentence."
+
+
+def test_mixed_en_zh_chunks_keep_a_space_at_the_switch(tmp_path):
+    """The other direction: an English chunk, then Chinese (whose own joiner is "")."""
+    out = tmp_path / "mix_vidx-out"
+    write_asr(out, "whisper-large-v3@en", [{"start": 0, "end": 3, "text": "Now in English."}])
+    write_asr(out, "whisper-large-v3@zh", [{"start": 6, "end": 9, "text": "今天我们聊一聊天气。"},
+                                           {"start": 9, "end": 12, "text": "星期六天气晴朗温暖。"}])
+    (out / "regions.json").write_text(json.dumps([{"start": 0, "end": 6, "lang": "en"},
+                                                  {"start": 6, "end": 12, "lang": "zh"}]))
+    run_merge(out, "--langs", "en,zh")
+    assert paragraph(out) == "Now in English. 今天我们聊一聊天气。星期六天气晴朗温暖。"
+
+
+def test_last_region_runs_to_the_end(tmp_path):
+    """regions.json ends where the audio did when it was made; a chunk whose middle lies after that end
+    still belongs to the last region."""
+    out = tmp_path / "mix_vidx-out"
+    write_asr(out, "whisper-large-v3@ru", [{"start": 0, "end": 4, "text": "Добрый вечер."}])
+    write_asr(out, "whisper-large-v3@en", [{"start": 6, "end": 9, "text": "Now in English."},
+                                           {"start": 9.5, "end": 11, "text": "One more sentence."}])
+    (out / "regions.json").write_text(json.dumps([{"start": 0, "end": 5, "lang": "ru"},
+                                                  {"start": 5, "end": 10, "lang": "en"}]))
+    run_merge(out, "--langs", "ru,en")
+    assert (out / "transcript.txt").read_text().splitlines()[-1] == "[00:00:09] One more sentence."

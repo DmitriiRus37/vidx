@@ -1,4 +1,8 @@
 # Tool configuration only: vidx is not a package yet. Test command: see tests/conftest.py.
+[dependency-groups]
+# pinned like the helper venv (vidx HELPER_PKGS), so the tests run what vidx runs
+test = ["pytest==9.1.1", "numpy==2.4.6", "pillow==12.3.0", "markdown-it-py==4.2.0"]
+
 [tool.ruff]
 line-length = 120
 target-version = "py311"

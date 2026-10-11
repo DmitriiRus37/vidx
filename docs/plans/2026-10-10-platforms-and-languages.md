@@ -1,6 +1,9 @@
 # vidx: macOS + Linux + Windows, 12 languages, N-language mixed speech: implementation plan
 
-Status: plan, not started. Written 2026-10-10 from a probe run on the current code (commit `bfb143c`).
+Status: Phase 0 (without the CI of 0.2), Phase 1 and the language part of Phase 4 are built (branch
+`languages`, 2026-10-11); where the build differs from the plan, the step says so under **As built**.
+Phases 0.2, 2, 3 and 5 are not started. Written 2026-10-10 from a probe run on the current code (commit
+`bfb143c`).
 
 ## Goals
 
@@ -209,6 +212,9 @@ whisper.
 - **Test first**: golden zh fixture (whisper 4.5 chars/s + parakeet gibberish) → transcript is the whisper
   Chinese text.
 - **Done when**: green; ja/zh/hi/ar/be runs no longer start parakeet.
+- **As built**: with parakeet gone, a ja/zh/hi/ar/be region had no fallback at all (the alternatives were
+  parakeet and whisper, and whisper is the base). Where parakeet does not know the region's language
+  the alternatives are whisper, turbo and Apple (if it has the locale).
 
 ### 1.3 Speech-rate thresholds per script
 
@@ -224,6 +230,21 @@ whisper.
 - **Test first**: per script, a "normal speech" chunk is not replaced and a chunk at ⅓ of the normal rate
   is.
 - **Done when**: green; ru/en goldens unchanged.
+- **As built** (skip / loop chars/s, in `lib/languages.py`):
+  - latin and cyrillic 6 / 25, but de, fr, it, es 7 / 30: their TTS speech ran at 18–21 chars/s, so 25
+    is too close to normal for a loop limit and 6 below ⅓ of it;
+  - arabic 3 / 16 (normal 8.0);
+  - devanagari 6 / 25, not 5: Hindi ran at 15.4, like Latin, so ⅓ of it is 5.1 and needs a floor above;
+  - cjk 2 / 10, ja 2.5 / 12: ⅓ of Chinese's 4.5 is 1.5, exactly the planned floor, which would not
+    catch it; Japanese runs faster (6.6);
+  - hangul 3 / 16 and thai, lao, myanmar, khmer 6 / 25 (joiner "", no word spaces): not calibrated,
+    no clip.
+
+  Rule used: skip 2.2–3× below the normal TTS rate, loop 1.4–2× above it. The "alternative must be
+  longer than 80 chars" rule became 5 s of the script's normal speech (`normal_cps`: Latin/Cyrillic 16,
+  so still 80; CJK 4.5 → 22.5; Arabic 8; Devanagari 15): 80 chars is 18 s of Chinese, so no realistic
+  5–10 s chunk qualified. TTS speech is cleaner and steadier than meetings; recalibrate on real
+  recordings (Phase 5).
 
 ### 1.4 Joining and capitalisation per script
 
@@ -264,6 +285,11 @@ whisper.
   - backticks.
 - **Test first**: `"усім!"` unchanged; `"![x](http://t)"` neutralised; `"<img src=x>"` escaped.
 - **Done when**: green; goldens updated deliberately.
+- **As built**: `[text](` was not enough: nested brackets (`[click [here]](url)`) and a backslash
+  (`\[x](url)`, which turns the added escape into a literal backslash) still made links, and a line break
+  in a title (`Intro\n# Injected`) started a block. Every `[` with any later `](`, `][` or `]:` is
+  escaped, backslashes are doubled, line breaks become spaces. Tests render with a CommonMark parser
+  (markdown-it-py) and require the same plain text back.
 
 ### 1.7 Apple engine: explicit locales and a timeout
 
@@ -276,6 +302,9 @@ whisper.
   - unit: table maps de → de-DE;
   - integration (macOS only): `apple_asr --locales` contains every mapped locale.
 - **Done when**: green on macOS CI; skipped elsewhere.
+- **As built**: the timeout is 1..86400 s, checked by vidx (`VIDX_APPLE_TIMEOUT`) and by `apple_asr`
+  (inf or 1e12 would trap converting to nanoseconds); the default 300 lives only in vidx, `apple_asr`
+  requires `--timeout`.
 
 ### 1.8 OCR and Vosk follow the run's languages
 
@@ -290,6 +319,10 @@ whisper.
   - `-l ja` → OCR request includes ja-JP;
   - `-l be` → no Vosk job, log line says why.
 - **Done when**: green (fake engines); one manual run with a real ja slide confirms Japanese OCR.
+- **As built**: one union was wrong: Vision reads only the script of a request's first language (plus
+  Latin), so `ru-RU,zh-Hans,en-US` read nothing of a Chinese slide. OCR runs one request per script group
+  (Latin/Cyrillic first, CJK together, Arabic, Devanagari…; en-US in each) and merges their lines by
+  position, a later group adding only lines no earlier one read (`ru-RU,en-US;zh-Hans,en-US`).
 
 ## Phase 2. Python orchestrator (4–5 days)
 
@@ -501,7 +534,8 @@ has the same CLI and passes the Phase 0 contract and end-to-end tests.
   - `-l a,b,c,...` accepted (any count);
   - whisper/turbo/Vosk/Apple queued per language that has at least one region;
   - GigaAM on ru regions;
-  - parakeet only if every region language is in its set;
+  - parakeet only if every region language is in its set (as built: every **listed** language, since
+    parakeet runs before the regions exist and its sentences snap their boundaries);
   - merge uses each region's language row from the table (thresholds, joiner, fillers).
 - **Test first**: fake engines with `-l uk,en,de` → 3 whisper jobs with the right clip timestamps; merge
   of a 3-region fixture picks the right source per region.

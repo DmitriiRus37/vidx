@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 LIB = ROOT / "lib"
 FIXTURES = ROOT / "tests" / "fixtures"
@@ -38,10 +40,14 @@ def check_golden(case, out, files=("transcript.txt", "transcript.md")):
 VIDX = ROOT / "vidx"
 MEDIA = FIXTURES / "media"
 BASH = "/bin/bash"  # macOS ships bash 3.2 there: the script must keep working with it
+# vidx runs ffmpeg/ffprobe itself even with the fake engines (audio, frames)
+needs_ffmpeg = pytest.mark.skipif(not (shutil.which("ffmpeg") and shutil.which("ffprobe")),
+                                  reason="the CLI tests run vidx, which needs ffmpeg and ffprobe on PATH")
 
 
 def vidx_env(tmp_path, env=None):
-    e = dict(os.environ)
+    """The test's environment without the developer's VIDX_* settings, plus the fake-engine switches."""
+    e = {k: v for k, v in os.environ.items() if not k.startswith("VIDX_")}
     e.update({"VIDX_FAKE_ENGINES": "1", "VIDX_TEST_PYTHON": sys.executable,
               "VIDX_FAKE_LOG": str(tmp_path / "fake.log"), "HF_HUB_OFFLINE": "1", "NO_COLOR": "1"})
     e.update(env or {})

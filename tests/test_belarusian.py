@@ -3,7 +3,7 @@ know it, OCR uses ru + uk, no Vosk/Apple/parakeet/GigaAM."""
 import json
 
 import languages
-from helpers import MEDIA, fake_calls, run_merge, run_vidx
+from helpers import MEDIA, fake_calls, needs_ffmpeg, run_merge, run_vidx
 
 BE_WHISPER = "Добры дзень. Сёння мы абмяркуем перазапуск сэрвісу і праверку графікаў пасля рэлізу."
 BE_TURBO = "Добры дзень. Сёння мы абмяркуем перазапуск сэрвісу."
@@ -12,9 +12,10 @@ BE_TURBO = "Добры дзень. Сёння мы абмяркуем пераз
 def test_table_row():
     be = languages.get("be")
     assert (be.script, be.apple_locale, be.vosk_model, be.parakeet) == ("cyrillic", None, None, False)
-    assert languages.ocr_langs(["be"]) == ["ru-RU", "uk-UA", "en-US"]
+    assert languages.ocr_groups(["be"]) == [["ru-RU", "uk-UA", "en-US"]]
 
 
+@needs_ffmpeg
 def test_only_whisper_and_turbo_run(tmp_path):
     r = run_vidx(MEDIA / "ru_slides.mp4", "-l", "be", "-o", "out", tmp_path=tmp_path)
     assert r.returncode == 0, r.stderr

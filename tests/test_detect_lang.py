@@ -44,9 +44,10 @@ def test_main_votes_with_the_language_id_backend(tmp_path, monkeypatch, capsys):
     answers = iter(["uk", "en", "uk", "de", "en", "de"])
 
     def load(model):
+        assert model == "turbo"  # the model id comes first (vidx lid_py)
         return lambda clip: {next(answers): 0.9, "pt": 0.1}
 
     monkeypatch.setitem(sys.modules, "lid", types.SimpleNamespace(load=load))
-    monkeypatch.setattr(sys, "argv", ["detect_lang.py", str(path), "turbo"])
+    monkeypatch.setattr(sys, "argv", ["detect_lang.py", "turbo", str(path)])
     detect_lang.main()
     assert capsys.readouterr().out.strip() == "uk,en"  # 5 clips: uk 2, en 2, de 1

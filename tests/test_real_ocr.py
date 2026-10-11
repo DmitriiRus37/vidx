@@ -31,7 +31,38 @@ def test_slide_title_read_in_its_language(ocr, tmp_path, lang):
     ImageDraw.Draw(im).text((80, 300), TITLES[lang], fill="black", font=ImageFont.truetype(str(FONT), 64))
     png = tmp_path / f"{lang}.png"
     im.save(png)
-    want = ",".join(languages.ocr_langs([lang]))
+    want = languages.ocr_arg([lang])
     out = subprocess.run([ocr, want, png], capture_output=True, text=True, check=True).stdout
     text = json.loads(out)["text"].replace(" ", "")
     assert TITLES[lang].replace(" ", "") in text, f"{want}: {text}"
+
+
+def slide(path, lines):
+    im = Image.new("RGB", (1280, 720), "white")
+    d = ImageDraw.Draw(im)
+    for i, line in enumerate(lines):
+        d.text((80, 160 + 140 * i), line, fill="black", font=ImageFont.truetype(str(FONT), 56))
+    im.save(path)
+
+
+@pytest.mark.parametrize("codes, lines", [
+    (["ru", "zh"], ["Погода на выходные", "周末的天气预报", "Деплой в Kubernetes"]),
+    (["ru", "ar"], ["طقس نهاية الأسبوع", "Погода на выходные"]),
+    (["de", "zh"], ["Größe und Übergabe", "周末的天气预报"]),
+])
+def test_mixed_script_slide_reads_every_line_once(ocr, tmp_path, codes, lines):
+    """With ru-RU first Vision returned nothing for the Chinese line; the zh model alone turns Cyrillic
+    into Latin look-alikes ("Aennon B Kubernetes"). One request per script, merged by position: each
+    line exactly once, from the model of its own script."""
+    png = tmp_path / "s.png"
+    slide(png, lines)
+    out = subprocess.run([ocr, languages.ocr_arg(codes), png], capture_output=True, text=True, check=True).stdout
+    assert json.loads(out)["text"].splitlines() == lines
+
+
+def test_unreadable_image_is_reported(ocr, tmp_path):
+    bad = tmp_path / "bad.jpg"
+    bad.write_text("not an image")
+    r = subprocess.run([ocr, "en-US", bad], capture_output=True, text=True, check=True)
+    assert json.loads(r.stdout) == {"file": "bad.jpg", "text": ""}
+    assert "bad.jpg" in r.stderr

@@ -2,8 +2,8 @@
 
 A base (GigaAM) chunk is swapped for the longer parakeet/whisper text over the same span when it
 looks like speech was skipped: < skip_cps chars/s without fillers, the alternative > ALT_RATIO times
-longer and > ALT_MIN_CHARS, and <= loop_cps chars/s (ru: 6 and 25). Each probe sits just next to one threshold, so
-moving any threshold flips at least one expectation.
+longer and > ALT_MIN_S x normal_cps (80 chars), and <= loop_cps chars/s (ru: 6 and 25). Each probe sits
+just next to one threshold, so moving any threshold flips at least one expectation.
 """
 import json
 

@@ -1,6 +1,8 @@
 """End-to-end runs of the bash vidx with fake engines: queue, stamps, resume, -j, failures."""
 import pytest
-from helpers import MEDIA, fake_calls, run_vidx
+from helpers import MEDIA, fake_calls, needs_ffmpeg, run_vidx
+
+pytestmark = needs_ffmpeg
 
 FIXTURE = MEDIA / "ru_slides.mp4"  # 4 s: Russian TTS + 2 slides
 RU_JOBS = ["whisper large-v3 [ru]", "Vosk [ru] (CPU)", "frames + OCR", "GigaAM-v3 [ru]",
@@ -55,7 +57,8 @@ def test_interrupted_job_reruns(tmp_path):
 
 @pytest.mark.parametrize("jobs", [2, 3])
 def test_jobs_limit(tmp_path, jobs):
-    r = run_vidx(FIXTURE, "-l", "ru", "-o", "out", "-j", jobs, tmp_path=tmp_path, env={"VIDX_FAKE_DELAY": "1.5"})
+    """Each fake job takes 3 s, well above the queue's 1 s poll, so N jobs really overlap."""
+    r = run_vidx(FIXTURE, "-l", "ru", "-o", "out", "-j", jobs, tmp_path=tmp_path, env={"VIDX_FAKE_DELAY": "3"})
     assert r.returncode == 0, r.stderr
     calls = fake_calls(tmp_path)
     assert len(calls) == len(RU_JOBS)
@@ -73,7 +76,9 @@ def test_auto_language(tmp_path):
 
 @pytest.mark.parametrize("jobs", [1, 2])
 def test_ctrl_c_stops_everything(tmp_path, jobs):
-    """Ctrl-C in a terminal sends SIGINT to the whole foreground process group."""
+    """Ctrl-C in a terminal sends SIGINT to the whole foreground process group. vidx starts with SIGINT at its
+    default, as from a terminal: a test run started in the background (`pytest &`) inherits it ignored, and an
+    ignored SIGINT cannot be trapped, so neither vidx nor the engines would react."""
     import os
     import signal
     import subprocess
@@ -83,7 +88,8 @@ def test_ctrl_c_stops_everything(tmp_path, jobs):
 
     p = subprocess.Popen([BASH, str(VIDX), str(FIXTURE), "-l", "ru", "-o", "out", "-j", str(jobs)], cwd=tmp_path,
                          env=vidx_env(tmp_path, {"VIDX_FAKE_DELAY": "60"}), start_new_session=True,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+                         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+                         preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
     pids = tmp_path / "fake.log.pids"
     deadline = time.time() + 30
     while not (pids.exists() and len(list(pids.iterdir())) >= jobs) and time.time() < deadline:
@@ -119,6 +125,16 @@ def test_apple_gets_explicit_locale_and_timeout(tmp_path):
     assert (tmp_path / "out" / "asr" / "apple.json").exists()
 
 
+def test_apple_timeout_default(tmp_path):
+    r = run_vidx(FIXTURE, "-l", "de", "-o", "out", "-e", "apple", tmp_path=tmp_path,
+                 env={"VIDX_FAKE_APPLE_LOCALES": "de-DE"})
+    assert r.returncode == 0, r.stderr
+    (call,) = [c for c in fake_calls(tmp_path) if c["engine"] == "apple"]
+    assert call["args"][:2] == ["--timeout", "300"]
+    help_run = run_vidx("help", "run", tmp_path=tmp_path).stdout
+    assert "VIDX_APPLE_TIMEOUT seconds (default 300, at most 86400)" in help_run
+
+
 def test_apple_skipped_when_locale_not_supported(tmp_path):
     r = run_vidx(FIXTURE, "-l", "de", "-o", "out", "-e", "apple", tmp_path=tmp_path,
                  env={"VIDX_FAKE_APPLE_LOCALES": "de-AT en-US"})  # de-AT is not de-DE
@@ -149,10 +165,11 @@ def test_ocr_follows_the_languages(tmp_path, lang, want):
     assert ocr_langs_of(tmp_path) == want
 
 
-def test_ocr_for_mixed_run_is_the_union(tmp_path):
+def test_ocr_for_mixed_scripts_one_group_per_script(tmp_path):
+    """Vision reads only its first language's script: Latin/Cyrillic first, then one group per other script."""
     r = run_vidx(FIXTURE, "-l", "zh,de", "-o", "out", "-e", "whisper", tmp_path=tmp_path)
     assert r.returncode == 0, r.stderr
-    assert ocr_langs_of(tmp_path) == "zh-Hans,de-DE,en-US"
+    assert ocr_langs_of(tmp_path) == "de-DE,en-US;zh-Hans,en-US"
 
 
 @pytest.mark.parametrize("lang, model", [("de", "vosk-model-de-0.21"), ("uk", "vosk-model-uk-v3"),
@@ -180,7 +197,7 @@ def test_mixed_regions_from_language_id_snapped_to_parakeet(tmp_path):
     r = run_vidx(FIXTURE, "-l", "ru,en", "-o", "out", "-e", "parakeet,whisper", tmp_path=tmp_path)
     assert r.returncode == 0, r.stderr
     args = regions_call(tmp_path)
-    assert args[0] == "ru,en" and args[2].endswith("whisper-large-v3-turbo")
+    assert args[0].endswith("whisper-large-v3-turbo") and args[1] == "ru,en"  # model first (lid_py)
     assert args[-1].endswith("asr/parakeet.json")
     assert (tmp_path / "out" / "regions.json").exists()
 
@@ -249,3 +266,72 @@ def test_gigaam_skipped_without_ru_region(tmp_path):
     assert r.returncode == 0, r.stderr
     assert "gigaam" not in [c["engine"] for c in fake_calls(tmp_path)]
     assert "GigaAM [ru]: no ru regions, skipped" in r.stderr
+
+
+def test_outside_vidx_variables_do_not_leak_into_the_run(tmp_path, monkeypatch):
+    """A VIDX_* variable set in the developer's shell must not change what the tests see."""
+    monkeypatch.setenv("VIDX_FAKE_FAIL", "gigaam")
+    monkeypatch.setenv("VIDX_APPLE_TIMEOUT", "7")
+    r = run_vidx(FIXTURE, "-l", "ru", "-o", "out", tmp_path=tmp_path)
+    assert r.returncode == 0, r.stderr
+
+
+def test_repeated_language_counts_once(tmp_path):
+    r = run_vidx(FIXTURE, "-l", "ru,en,ru", "-o", "out", "-e", "whisper", "-j", "2", tmp_path=tmp_path)
+    assert r.returncode == 0, r.stderr
+    langs = [c["args"][c["args"].index("--language") + 1] for c in fake_calls(tmp_path) if c["engine"] == "whisper"]
+    assert langs == ["ru", "en"]  # one writer per output file, even with -j 2
+    assert "ru,en" in regions_call(tmp_path)
+
+
+def test_same_language_twice_is_not_mixed(tmp_path):
+    r = run_vidx(FIXTURE, "-l", "ru,ru", "-o", "out", "-e", "whisper", tmp_path=tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert "language: ru\n" in r.stderr
+    assert "regions" not in [c["engine"] for c in fake_calls(tmp_path)]
+
+
+def test_language_id_backend_is_one_swap_point(tmp_path):
+    """Auto-detection and the region split both go through vidx's lid_py: one interpreter, one model id,
+    passed first to every language-ID script."""
+    r = run_vidx(FIXTURE, "-o", "out", "-e", "whisper", tmp_path=tmp_path, env={"VIDX_FAKE_LANG": "ru,en"})
+    assert r.returncode == 0, r.stderr
+    calls = {c["engine"]: c["args"] for c in fake_calls(tmp_path) if c["engine"] in ("detect_lang", "regions")}
+    assert calls["detect_lang"][0] == calls["regions"][0] == "mlx-community/whisper-large-v3-turbo"
+    assert calls["detect_lang"][1].endswith("audio.wav")
+
+
+def test_fake_hook_defaults_to_python3_on_path(tmp_path):
+    """Without VIDX_TEST_PYTHON the hook uses the python3 found on PATH (as its comment says)."""
+    import os
+    import subprocess
+    import sys
+
+    from helpers import BASH, VIDX, vidx_env
+
+    env = vidx_env(tmp_path)
+    del env["VIDX_TEST_PYTHON"]
+    env["PATH"] = os.path.dirname(sys.executable) + os.pathsep + env["PATH"]
+    r = subprocess.run([BASH, str(VIDX), str(FIXTURE), "-l", "ru", "-o", "out", "-e", "whisper", "--no-frames"],
+                       cwd=tmp_path, env=env, capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0, r.stderr
+
+
+def test_apple_locales_asked_once_per_run(tmp_path):
+    r = run_vidx(FIXTURE, "-l", "uk,en,de", "-o", "out", "-e", "apple", tmp_path=tmp_path, env=UK_EN_DE)
+    assert r.returncode == 0, r.stderr
+    assert [c["args"] for c in fake_calls(tmp_path, queries=True) if c["engine"] == "apple"].count(["--locales"]) == 1
+
+
+def test_regions_redone_when_parakeet_snapping_appears_or_goes(tmp_path):
+    """The regions stamp names the snapping (snap=parakeet|none), so adding or dropping parakeet redoes them."""
+    def regions_runs(*engines):
+        r = run_vidx(FIXTURE, "-l", "ru,en", "-o", "out", "-e", ",".join(engines), tmp_path=tmp_path)
+        assert r.returncode == 0, r.stderr
+        return [c["engine"] for c in fake_calls(tmp_path)].count("regions")
+
+    assert regions_runs("whisper") == 1
+    assert regions_runs("whisper", "parakeet") == 2  # now snapped to parakeet
+    assert regions_runs("whisper", "parakeet") == 2  # same options: cached
+    assert regions_runs("whisper") == 3  # parakeet gone: unsnapped again
+    assert "snap=none" in (tmp_path / "out" / ".vidx" / "regions.json.params").read_text()

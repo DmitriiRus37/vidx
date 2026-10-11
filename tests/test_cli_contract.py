@@ -1,7 +1,10 @@
 """CLI contract: option validation and refusals. Table-driven, so the same table can later run
-against a Python rewrite of the entry point. Each row: args, expected exit status, stderr part."""
+against a Python rewrite of the entry point. Each row: args, expected exit status, stderr part
+[, environment]."""
 import pytest
-from helpers import MEDIA, run_vidx
+from helpers import MEDIA, needs_ffmpeg, run_vidx
+
+pytestmark = needs_ffmpeg
 
 AV = str(MEDIA / "ru_slides.mp4")
 SILENT = str(MEDIA / "noaudio.mp4")
@@ -21,13 +24,18 @@ CONTRACT = {
     "unknown_option": ([AV, "--frobnicate"], 1, "unknown option --frobnicate"),
     "no_audio": ([SILENT, "-o", "out"], 1, "no audio track"),
     "no_audio_no_asr": ([SILENT, "-o", "out", "--no-asr"], 0, ""),
+    "repeated_language": ([AV, "-o", "out", "-l", "ru,en,ru", "-e", "whisper"], 0, "language: ru,en (mixed"),
+    "no_asr_mixed_languages": ([AV, "-o", "out", "--no-asr", "-l", "ru,en"], 0, ""),  # no regions.json then
+    **{f"apple_timeout_{v}": ([AV, "-e", "apple"], 1, "VIDX_APPLE_TIMEOUT must be", {"VIDX_APPLE_TIMEOUT": v})
+       for v in ("inf", "nan", "1e12", "0", "-5", "abc", "86401", "99999999999999999999")},
+    "apple_timeout_max": ([AV, "-o", "out", "-e", "apple"], 0, "", {"VIDX_APPLE_TIMEOUT": "86400"}),
 }
 
 
 @pytest.mark.parametrize("case", sorted(CONTRACT))
 def test_contract(case, tmp_path):
-    args, code, msg = CONTRACT[case]
-    r = run_vidx(*args, tmp_path=tmp_path)
+    args, code, msg, *env = CONTRACT[case]
+    r = run_vidx(*args, tmp_path=tmp_path, env=env[0] if env else None)
     assert r.returncode == code, r.stderr
     assert msg in r.stderr + r.stdout
 
@@ -53,3 +61,9 @@ def test_different_input_redoes_everything(tmp_path):
     r = run_vidx(SILENT, "-o", "out", "--no-asr", tmp_path=tmp_path)
     assert r.returncode == 0, r.stderr
     assert "input changed" in r.stderr
+
+
+def test_help_says_transcript_txt_is_not_escaped(tmp_path):
+    out = run_vidx("help", "run", tmp_path=tmp_path).stdout
+    line = next(x for x in out.splitlines() if x.strip().startswith("transcript.txt"))
+    assert "plain text" in line and "not escaped" in line

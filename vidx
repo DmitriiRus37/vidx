@@ -19,7 +19,8 @@ HELPER_PKGS=(vosk==0.3.44 pillow==12.3.0 numpy==2.4.6)
 GIGA_PKGS=('gigaam[torch] @ git+https://github.com/salute-developers/GigaAM@7447938d791c4f3e643386ee22c33777004293a5'
            torch==2.14.1 torchaudio==2.11.0 soundfile==0.14.0 numpy==2.4.6)
 APPLE_BIN="$LIB/apple_asr"
-APPLE_TIMEOUT=${VIDX_APPLE_TIMEOUT:-300}  # seconds for Apple's speech model download (it can hang)
+APPLE_TIMEOUT_DEFAULT=300  # seconds for Apple's speech model download (it can hang); the only default
+APPLE_TIMEOUT=${VIDX_APPLE_TIMEOUT:-$APPLE_TIMEOUT_DEFAULT}
 # Python for the venvs: the code runs on 3.11+, GigaAM pins onnxruntime 1.23 which has no 3.14 build.
 PY_VERSION=${VIDX_PYTHON:-3.14}
 PY_GIGA_VERSION=${VIDX_PYTHON_GIGA:-3.13}
@@ -117,13 +118,15 @@ SPEECH
   youtube   manual + auto subtitles      as published       —        download
   * rough, per hour of audio on Apple Silicon, one job at a time
   apple downloads its speech model per locale on first use; the download
-  gets VIDX_APPLE_TIMEOUT seconds (default 300), then the engine fails.
+  gets VIDX_APPLE_TIMEOUT seconds (default ${APPLE_TIMEOUT_DEFAULT}, at most 86400), then
+  the engine fails.
 
   Merge, per language region: base = first fitting source of GigaAM, whisper,
   parakeet, turbo, apple, YouTube, Vosk. A base chunk is swapped for parakeet/
-  whisper text only if it looks like speech was skipped (below the language's
-  chars/s floor, e.g. 6 for ru/en, 2 for zh; the other is >2x longer and >80
-  chars and not faster than the language's loop limit, 25 for ru/en).
+  whisper text (whisper/turbo/apple where parakeet does not know the language)
+  only if it looks like speech was skipped: below the language's chars/s floor
+  (6 for ru/en, 2 for zh), the other is >2x longer, longer than 5 s of normal
+  speech (80 chars ru/en, 22.5 zh) and not faster than the loop limit (25 ru/en).
 
 PICTURES
       --scene X          ffmpeg scene-change threshold 0..1 (default 0.3)
@@ -135,7 +138,8 @@ PICTURES
       --crop             crop frames to the non-dark screen-share area
       --meet             Google Meet recordings: --roi 0.75 --crop
                          (ignores the participant tiles on the right)
-  OCR (Apple Vision) reads the run's languages plus English (be: ru + uk).
+  OCR (Apple Vision) reads the run's languages plus English (be: ru + uk), one
+  pass per script (Latin/Cyrillic, CJK, Arabic, Devanagari...).
 
 SKIP STEPS
       --no-asr           no audio, language or speech: pictures + OCR (+ subs)
@@ -147,7 +151,8 @@ EXIT STATUS
 
 OUTPUT FILES (in the output dir)
   transcript.md          merged transcript, 55 s paragraphs, YouTube chapters
-  transcript.txt         same, one timestamped line per chunk
+  transcript.txt         same text as plain text (not escaped for Markdown),
+                         one [HH:MM:SS] line per chunk
   aligned.md             every source + OCR side by side in 40 s windows
   ocr.md                 on-screen text per frame
   asr/<engine>[@lang].json           raw engine output with timestamps
@@ -217,6 +222,10 @@ secs() { awk -F: '{ s = 0; for (i = 1; i <= NF; i++) s = s * 60 + $i; print s }'
 mlx_py() {  # run a script in mlx-whisper's own Python, hiding Hugging Face's "Fetching" noise
   "$(uv tool dir)/mlx-whisper/bin/python" "$@" 2>&1 >&3 | { grep -v Fetching || true; } >&2
 } 3>&1
+# Spoken-language ID backend: lib/lid.py, run in mlx-whisper's Python with whisper turbo. To port it,
+# change lid.load() and these two lines; detect_lang.py and regions.py only call lid.load(model).
+LID_MODEL=$M_TURBO
+lid_py() { local s=$1; shift; mlx_py "$LIB/$s.py" "$LID_MODEL" "$@"; }  # detect_lang|regions|lid, args...
 
 # Ctrl-C / kill: stop every background job together with its children (engines ignore SIGINT
 # when started in the background), then exit.
@@ -230,11 +239,9 @@ build_swift() {  # name → lib/<name>, rebuilt when the .swift source is newer
   swiftc -O -o "$LIB/$1" "$LIB/$1.swift"
 }
 
-vosk_model() { lang_field "$1" vosk_model; }  # language → model dir name, "" = no model
-
-fetch_vosk() {  # download + unzip into a temp dir, then move into place, so a half-done model never counts
-  local name tmp
-  name=$(vosk_model "$1"); [[ -n $name ]] || return 1
+fetch_vosk() {  # model dir name; download + unzip into a temp dir, then move into place, so a half-done model never counts
+  local name=$1 tmp
+  [[ -n $name ]] || return 1
   [[ -d $MODELS/$name ]] && return 0
   log "downloading Vosk model $name (0.3-2 GB, first use only)"
   mkdir -p "$MODELS"; tmp=$(mktemp -d "$MODELS/.tmp.XXXXXX")
@@ -259,16 +266,16 @@ parakeet() {
 }
 gigaam() { "$PY_GIGA" "$LIB/gigaam_run.py" "$@"; }   # audio, out.json [, regions.json]
 vosk() { "$PY" "$LIB/vosk_run.py" "$@"; }            # model dir, audio, out.json
-apple_asr() {  # [--timeout SEC] locale audio out.json | --locales; exit 4 = model download timed out
+apple_asr() {  # --timeout SEC locale audio out.json | --locales; exit 4 = model download timed out
   local rc=0; "$APPLE_BIN" "$@" || rc=$?
   [[ $rc != 4 ]] || warn "Apple SpeechTranscriber: model download for $3 timed out after $2 s"
   return $rc
 }
 ocr() { "$LIB/ocr" "$@"; }                           # langs, image...
-lang_field() { "$PY" -I "$LIB/languages.py" "$1" "$2"; }  # language, field of lib/languages.py
-apple_supports() {  # locale (de-DE). Capture first: "cmd | grep -q" can fail under pipefail
-  local l; l=$(apple_asr --locales 2>/dev/null | sed -n 's/^supported://p' || true)
-  [[ " $l " == *" $1 "* ]]
+lang_field() { "$PY" -I "$LIB/languages.py" "$@"; }  # language, field... of lib/languages.py → a|b|c
+apple_supports() {  # locale (de-DE); asks apple_asr once per run. Captured, as "cmd | grep -q" can fail under pipefail
+  [[ -n ${APPLE_LOCALES+set} ]] || APPLE_LOCALES=$(apple_asr --locales 2>/dev/null | sed -n 's/^supported://p' || true)
+  [[ " $APPLE_LOCALES " == *" $1 "* ]]
 }
 
 setup() {
@@ -284,11 +291,12 @@ setup() {
   VIRTUAL_ENV="$VIDX_DIR/.venv-giga" uv pip install -q "${GIGA_PKGS[@]}"
   log "compiling Swift helpers (Vision OCR, SpeechTranscriber)"
   build_swift ocr; build_swift apple_asr
-  fetch_vosk ru
+  fetch_vosk "$(lang_field ru vosk_model)"
   log "warming model caches (whisper large-v3, turbo, parakeet, GigaAM)"
   t=$(mktemp -d); ffmpeg -loglevel error -f lavfi -i anullsrc=r=16000:cl=mono -t 1 "$t/s.wav"
   mlx_whisper "$t/s.wav" --model "$M_WHISPER" -o "$t" --verbose False >/dev/null
   mlx_whisper "$t/s.wav" --model "$M_TURBO" -o "$t" --verbose False >/dev/null
+  lid_py lid  # the language-ID model (whisper turbo today, cached above; another backend loads its own)
   parakeet-mlx "$t/s.wav" --model "$M_PARAKEET" --output-dir "$t" >/dev/null
   "$PY_GIGA" -I -c 'import gigaam; gigaam.load_model("v3_e2e_rnnt", device="cpu")' >/dev/null
   rm -rf "$t"
@@ -350,8 +358,16 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 [[ $JOBS =~ ^[1-9][0-9]*$ ]] || die "--jobs must be a positive number"
+[[ $APPLE_TIMEOUT =~ ^[1-9][0-9]{0,4}$ ]] && (( APPLE_TIMEOUT <= 86400 )) \
+  || die "VIDX_APPLE_TIMEOUT must be 1..86400 seconds, got '$APPLE_TIMEOUT'"
 LANG_RE='^[a-z]{2,3}(,[a-z]{2,3})*$'
 [[ $LANG_OPT == auto || $LANG_OPT =~ $LANG_RE ]] || die "--lang must be auto or a list like ru or ru,en"
+uniq_list() {  # comma list → the same without repeats, first occurrence kept (ru,en,ru → ru,en)
+  local x res=""
+  for x in ${1//,/ }; do [[ ",$res," == *",$x,"* ]] || res="${res:+$res,}$x"; done
+  echo "$res"
+}
+LANG_OPT=$(uniq_list "$LANG_OPT")  # a repeated language would queue two writers of one output file
 IFS=, read -r -a ENGINE_LIST <<< "$ENGINES"
 for e in "${ENGINE_LIST[@]}"; do
   [[ ",$ALL_ENGINES," == *",$e,"* ]] || die "unknown engine '$e' (known: $ALL_ENGINES)"
@@ -467,7 +483,7 @@ if [[ $DO_ASR == 1 ]]; then
   if [[ $LANG_OPT == auto ]]; then
     if fresh "$OUT/lang.txt" detect; then
       log "detecting language (10 s clips, 1 per minute, whisper turbo)"
-      mlx_py "$LIB/detect_lang.py" "$AUDIO" "$M_TURBO" > "$OUT/lang.tmp"
+      lid_py detect_lang "$AUDIO" > "$OUT/lang.tmp"
       mv "$OUT/lang.tmp" "$OUT/lang.txt"; stamp "$OUT/lang.txt" detect
     fi
     LANGS=$(cat "$OUT/lang.txt")
@@ -484,7 +500,7 @@ else
   fi
 fi
 IFS=, read -r -a LANG_LIST <<< "$LANGS"
-OCR_LANGS=$("$PY" -I "$LIB/languages.py" --ocr "$LANGS")  # Vision: the run's languages + English
+OCR_LANGS=$("$PY" -I "$LIB/languages.py" --ocr "$LANGS")  # Vision: the run's languages + English, per script
 MIXED=0; [[ ${#LANG_LIST[@]} -gt 1 ]] && MIXED=1
 [[ $DO_ASR == 1 ]] && log "language: $LANGS$([[ $MIXED == 1 ]] && echo ' (mixed: language-bound engines run once per language)')"
 tag() { if [[ $MIXED == 1 ]]; then echo "$1@$2"; else echo "$1"; fi; }  # whisper-large-v3 or whisper-large-v3@en
@@ -545,54 +561,67 @@ single_language() {  # mixed split impossible → carry on with the first langua
   LANGS=${LANG_LIST[0]}; LANG_LIST=("$LANGS"); MIXED=0
 }
 
+# What the engines need per language, looked up once; arrays in the order of LANG_LIST (bash 3.2 has
+# no maps): parakeet knows it (1/0), Apple locale, Vosk model, then the clip timestamps of its regions.
+L_PARAKEET=() L_APPLE=() L_VOSK=() L_CLIPS=()
+for L in "${LANG_LIST[@]}"; do
+  IFS='|' read -r pk ap vm <<< "$(lang_field "$L" parakeet apple_locale vosk_model)"
+  L_PARAKEET+=("$pk") L_APPLE+=("$ap") L_VOSK+=("$vm")
+done
+
 # Mixed speech: regions.py splits the audio into single-language regions by whisper turbo's language
 # ID on short pieces; parakeet (no language forced) runs first when enabled and its sentence edges
-# sharpen the boundaries. whisper/turbo @L then transcribe only the L regions (--clip-timestamps),
-# GigaAM only the ru ones; without that whisper translates the other language and GigaAM garbles it.
+# sharpen the boundaries. It must run before the regions exist, so it is gated by the LISTED languages.
+# whisper/turbo @L then transcribe only the L regions (--clip-timestamps), GigaAM only the ru ones;
+# without that whisper translates the other language and GigaAM garbles it.
 if [[ $DO_ASR == 1 && $MIXED == 1 ]]; then
   mkdir -p "$OUT/asr"
-  REGION_ARGS=("$LANGS" "$AUDIO" "$M_TURBO" "$OUT/regions.tmp")
-  PK_ALL=1; for L in "${LANG_LIST[@]}"; do [[ $(lang_field "$L" parakeet) == 1 ]] || PK_ALL=0; done
-  if has parakeet && [[ $PK_ALL == 0 ]]; then
+  REGION_ARGS=("$LANGS" "$AUDIO" "$OUT/regions.tmp") SNAP=none
+  if has parakeet && [[ " ${L_PARAKEET[*]} " == *" 0 "* ]]; then
     log "parakeet: not every language of $LANGS is one of its 25, skipped"
   elif has parakeet; then
     SOURCES=parakeet
     run_job fg "parakeet-tdt-0.6b-v3 [any]" "$OUT/asr/parakeet.json" "$M_PARAKEET" parakeet
-    [[ -s $OUT/asr/parakeet.json ]] && REGION_ARGS+=("$OUT/asr/parakeet.json")
+    [[ -s $OUT/asr/parakeet.json ]] && { REGION_ARGS+=("$OUT/asr/parakeet.json"); SNAP=parakeet; }
   fi
-  REGION_PARAMS="$LANGS lid ${#REGION_ARGS[@]}"  # 5 args = snapped to parakeet
+  REGION_PARAMS="$LANGS lid snap=$SNAP"  # boundaries snapped to parakeet's sentences or not
   if fresh "$OUT/regions.json" "$REGION_PARAMS"; then
     log "splitting into language regions (whisper turbo language ID)"
-    if mlx_py "$LIB/regions.py" "${REGION_ARGS[@]}"; then
+    if lid_py regions "${REGION_ARGS[@]}"; then
       mv "$OUT/regions.tmp" "$OUT/regions.json"; stamp "$OUT/regions.json" "$REGION_PARAMS"
     else
       single_language "language split failed"
     fi
   fi
 fi
-REGIONS=""; [[ $MIXED == 1 ]] && REGIONS=$(cat "$OUT/regions.json")
+REGIONS=""; [[ $DO_ASR == 1 && $MIXED == 1 ]] && REGIONS=$(cat "$OUT/regions.json")  # --no-asr: none made
+if [[ $DO_ASR == 1 ]]; then
+  for L in "${LANG_LIST[@]}"; do L_CLIPS+=("$(clips_of "$L")"); done
+fi
 
 # Queue order interleaves GPU and CPU work, so -j 2/3 keeps both busy:
 # whisper (GPU) · vosk (CPU) · frames+OCR (CPU) · gigaam · parakeet · apple · turbo
+queue_whisper() {  # label, model, output stem prefix: one job per language that has a region
+  local i L s c
+  for i in "${!LANG_LIST[@]}"; do
+    L=${LANG_LIST[$i]} c=${L_CLIPS[$i]}; s=$(tag "$3" "$L")
+    if [[ $c == none ]]; then log "$1 [$L]: no $L regions, skipped"
+    else queue_asr "$1 [$L]" "$OUT/asr/$s.json" "$2 $L $c $PROMPT" whisper "$2" "$s" "$L" "$c"; fi
+  done
+}
 if [[ $DO_ASR == 1 ]]; then
   mkdir -p "$OUT/asr"
-  for L in "${LANG_LIST[@]}"; do
-    has whisper || break
-    s=$(tag whisper-large-v3 "$L"); c=$(clips_of "$L")
-    if [[ $c == none ]]; then log "whisper large-v3 [$L]: no $L regions, skipped"
-    else queue_asr "whisper large-v3 [$L]" "$OUT/asr/$s.json" "$M_WHISPER $L $c $PROMPT" \
-      whisper "$M_WHISPER" "$s" "$L" "$c"; fi
-  done
-  for L in "${LANG_LIST[@]}"; do
-    has vosk || break
-    if [[ $(clips_of "$L") == none ]]; then log "Vosk [$L]: no $L regions, skipped"
-    elif fetch_vosk "$L"; then
-      s=$(tag vosk "$L")
-      queue_asr "Vosk [$L] (CPU)" "$OUT/asr/$s.json" "$(vosk_model "$L")" \
-        vosk "$MODELS/$(vosk_model "$L")" "$AUDIO" "$OUT/asr/$s.json"
-    elif [[ -z $(vosk_model "$L") ]]; then log "Vosk: no model for '$L', skipped"
-    else log "Vosk [$L]: model download failed, skipped"; fi
-  done
+  if has whisper; then queue_whisper "whisper large-v3" "$M_WHISPER" whisper-large-v3; fi
+  if has vosk; then
+    for i in "${!LANG_LIST[@]}"; do
+      L=${LANG_LIST[$i]} m=${L_VOSK[$i]}; s=$(tag vosk "$L")
+      if [[ ${L_CLIPS[$i]} == none ]]; then log "Vosk [$L]: no $L regions, skipped"
+      elif [[ -z $m ]]; then log "Vosk: no model for '$L', skipped"
+      elif fetch_vosk "$m"; then
+        queue_asr "Vosk [$L] (CPU)" "$OUT/asr/$s.json" "$m" vosk "$MODELS/$m" "$AUDIO" "$OUT/asr/$s.json"
+      else log "Vosk [$L]: model download failed, skipped"; fi
+    done
+  fi
 fi
 if [[ $DO_FRAMES == 1 ]] && has_stream v; then
   frames_and_ocr() {
@@ -623,35 +652,31 @@ if [[ $DO_FRAMES == 1 ]] && has_stream v; then
 fi
 if [[ $DO_ASR == 1 ]]; then
   if has gigaam; then
-    if [[ ",$LANGS," == *,ru,* && $(clips_of ru) == none ]]; then log "GigaAM [ru]: no ru regions, skipped"
-    elif [[ ",$LANGS," == *,ru,* ]]; then
+    RU=-1; for i in "${!LANG_LIST[@]}"; do if [[ ${LANG_LIST[$i]} == ru ]]; then RU=$i; fi; done
+    if [[ $RU == -1 ]]; then log "GigaAM: Russian only, skipped"
+    elif [[ ${L_CLIPS[$RU]} == none ]]; then log "GigaAM [ru]: no ru regions, skipped"
+    else
       GIGA_ARGS=("$AUDIO" "$OUT/asr/gigaam.json"); [[ $MIXED == 1 ]] && GIGA_ARGS+=("$OUT/regions.json")
       queue_asr "GigaAM-v3 [ru]" "$OUT/asr/gigaam.json" "v3_e2e_rnnt $REGIONS" gigaam "${GIGA_ARGS[@]}"
-    else log "GigaAM: Russian only, skipped"; fi
+    fi
   fi
   if has parakeet && [[ $MIXED == 0 ]]; then
-    if [[ $(lang_field "$LANGS" parakeet) == 1 ]]; then
+    if [[ ${L_PARAKEET[0]} == 1 ]]; then
       queue_asr "parakeet-tdt-0.6b-v3 [any]" "$OUT/asr/parakeet.json" "$M_PARAKEET" parakeet
     else log "parakeet: no '$LANGS', skipped (25 European languages only)"; fi
   fi
   if has apple && build_swift apple_asr; then
-    for L in "${LANG_LIST[@]}"; do
-      s=$(tag apple "$L"); loc=$(lang_field "$L" apple_locale)
+    for i in "${!LANG_LIST[@]}"; do
+      L=${LANG_LIST[$i]} loc=${L_APPLE[$i]}; s=$(tag apple "$L")
       if [[ -z $loc ]]; then log "Apple SpeechTranscriber: no '$L', skipped"
-      elif [[ $(clips_of "$L") == none ]]; then log "Apple SpeechTranscriber [$L]: no $L regions, skipped"
+      elif [[ ${L_CLIPS[$i]} == none ]]; then log "Apple SpeechTranscriber [$L]: no $L regions, skipped"
       elif apple_supports "$loc"; then
         queue_asr "Apple SpeechTranscriber [$L]" "$OUT/asr/$s.json" "$loc" \
           apple_asr --timeout "$APPLE_TIMEOUT" "$loc" "$AUDIO" "$OUT/asr/$s.json"
       else log "Apple SpeechTranscriber: no $loc, skipped"; fi
     done
   fi
-  for L in "${LANG_LIST[@]}"; do
-    has turbo || break
-    s=$(tag whisper-turbo "$L"); c=$(clips_of "$L")
-    if [[ $c == none ]]; then log "whisper turbo [$L]: no $L regions, skipped"
-    else queue_asr "whisper turbo [$L]" "$OUT/asr/$s.json" "$M_TURBO $L $c $PROMPT" \
-      whisper "$M_TURBO" "$s" "$L" "$c"; fi
-  done
+  if has turbo; then queue_whisper "whisper turbo" "$M_TURBO" whisper-turbo; fi
 fi
 run_queue
 

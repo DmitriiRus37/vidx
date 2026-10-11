@@ -1,13 +1,14 @@
-"""Split mixed-language speech into single-language regions (runs in mlx-whisper's own Python).
+"""Split mixed-language speech into single-language regions (runs in the language-ID backend's Python).
 
-usage: regions.py <langs, e.g. uk,en,de> <audio.wav 16k mono> <whisper model> <out.json> [parakeet.json]
+usage: regions.py <language-ID model> <langs, e.g. uk,en,de> <audio.wav 16k mono> <out.json> [parakeet.json]
+       (vidx runs it through lid_py, which picks the interpreter and the model)
 
 1. Pieces: the audio is cut in the middle of every pause (at least PAUSE_S of frames QUIET_DB below
    the loud ones). A piece shorter than SEG_MIN_S joins the neighbour behind the shorter pause (the
    longer pause is the likelier language switch); a piece longer than SEG_MAX_S is cut again at its
    quietest points (common.pause_cuts, the cutter GigaAM uses). Silent pieces get no language.
-2. Language ID per piece (lid.py, whisper turbo): probabilities restricted to the listed languages and
-   renormalised. Works for any number of languages and for same-script pairs (ru/uk, de/fr): it listens
+2. Language ID per piece (lid.load(model), today whisper turbo): probabilities restricted to the listed
+   languages and renormalised. Works for any number of languages and for same-script pairs (ru/uk, de/fr): it listens
    to the audio, not to the letters of a transcript.
 3. Smoothing. A piece is trusted if it is at least SHORT_S long and its top language has at least
    MIN_CONF of the probability. Every other piece takes its neighbours' language: the same one if both
@@ -23,11 +24,14 @@ usage: regions.py <langs, e.g. uk,en,de> <audio.wav 16k mono> <whisper model> <o
 6. A warning on stderr when two listed languages could not be told apart: over the pieces where they
    are the top two, the top one averaged less than PAIR_WARN of their probability.
 out: [{"start", "end", "lang"}], first region from 0, last to the end of the audio
+
+Porting the language ID to another backend changes nothing here: only lid.py's load() and vidx's
+LID_MODEL / lid_py (the interpreter and the model id); see lid.py.
 """
 import sys
 from dataclasses import dataclass
 
-from common import FRAME_S, SILENCE_RMS, dump_json, is_silent, load_segments, pause_cuts, read_wav
+from common import FRAME_S, SILENCE_RMS, dump_json, frame_rms, is_silent, load_segments, pause_cuts, read_wav, top
 
 SEG_MIN_S, SEG_MAX_S = 2, 8
 PAUSE_S, QUIET_DB, LOUD_PERCENTILE = 0.2, 26, 90
@@ -58,8 +62,8 @@ class Pauses:
         import numpy as np
 
         self.sr, self.fr = sr, int(FRAME_S * sr)
-        n = len(x) // self.fr
-        self.e = np.sqrt((x[:n * self.fr].reshape(n, self.fr) ** 2).mean(1)) if n else np.zeros(0)
+        self.e = frame_rms(x, sr)
+        n = len(self.e)
         loud = np.percentile(self.e, LOUD_PERCENTILE) if n else 0.0
         quiet = self.e < max(SILENCE_RMS, loud * 10 ** (-QUIET_DB / 20))
         self.runs, i = [], 0  # [(first frame, end frame)] of quiet stretches
@@ -121,10 +125,6 @@ def probs_of(x, a, b, langs, detect):
 def lid_pieces(x, sr, langs, detect, pauses=None):
     """Audio → [Piece] covering all of it, each with its restricted language probabilities."""
     return [Piece(a / sr, b / sr, probs_of(x, a, b, langs, detect)) for a, b in pieces_at_pauses(x, sr, pauses)]
-
-
-def top(probs):
-    return max(probs, key=probs.get)
 
 
 def join(labelled):
@@ -221,8 +221,9 @@ def pair_warnings(pieces, langs):
     """Listed language pairs that language ID could not tell apart (step 6 of the module doc)."""
     shares = {}
     for p in pieces:
-        if p.probs and len(langs) > 1:
-            a, b = sorted(p.probs, key=p.probs.get, reverse=True)[:2]
+        if p.probs and len(p.probs) > 1:  # one language: nothing to tell apart
+            a = top(p.probs)
+            b = top({k: v for k, v in p.probs.items() if k != a})
             pair = tuple(sorted((a, b), key=langs.index))
             shares.setdefault(pair, []).append(p.probs[a] / (p.probs[a] + p.probs[b]))
     return [pair for pair, v in sorted(shares.items(), key=lambda kv: [langs.index(x) for x in kv[0]])
@@ -238,7 +239,7 @@ def split(x, sr, langs, detect, sentences=None):
 
 
 def main():
-    langs, audio, model, out = sys.argv[1].split(","), sys.argv[2], sys.argv[3], sys.argv[4]
+    model, langs, audio, out = sys.argv[1], list(dict.fromkeys(sys.argv[2].split(","))), sys.argv[3], sys.argv[4]
     sentences = load_segments(sys.argv[5]) if len(sys.argv) > 5 else None
     import lid
 

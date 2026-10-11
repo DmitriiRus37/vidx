@@ -37,7 +37,21 @@ def is_silent(clip):
     return len(clip) == 0 or float(np.sqrt((clip ** 2).mean())) < SILENCE_RMS
 
 
-FRAME_S = 0.03  # loudness frame of the pause cutter
+FRAME_S = 0.03  # loudness frame of the pause cutters
+
+
+def frame_rms(x, sr):
+    """Loudness of every whole FRAME_S frame of x: RMS (+1e-12 under the root, so silence is not 0)."""
+    import numpy as np
+
+    fr = int(FRAME_S * sr)
+    n = len(x) // fr
+    return np.sqrt((x[:n * fr].reshape(n, fr) ** 2).mean(1) + 1e-12)
+
+
+def top(probs):
+    """The most probable key of {language: probability}."""
+    return max(probs, key=probs.get)
 
 
 def pause_cuts(x, sr, lo_s, hi_s):
@@ -47,8 +61,8 @@ def pause_cuts(x, sr, lo_s, hi_s):
     import numpy as np
 
     fr = int(FRAME_S * sr)
-    n = len(x) // fr
-    e = np.sqrt((x[:n * fr].reshape(n, fr) ** 2).mean(1) + 1e-12)
+    e = frame_rms(x, sr)
+    n = len(e)
     pts, i = [0], 0
     while True:
         lo, hi = i + int(lo_s / FRAME_S), i + int(hi_s / FRAME_S)

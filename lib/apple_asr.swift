@@ -1,10 +1,10 @@
 // Apple SpeechTranscriber (macOS 26+, on-device speech recognition).
-// usage: apple_asr --locales                                   → supported / installed locales
-//        apple_asr [--timeout SEC] <locale> <audio> <out.json>
+// usage: apple_asr --locales                                 → supported / installed locales
+//        apple_asr --timeout SEC <locale> <audio> <out.json>
 // <locale> is language-REGION (de-DE): matched exactly against the supported locales, because a bare
 // "de" resolves to whatever the system prefers (de-AT). A missing speech model is downloaded first;
-// that download gets SEC seconds (default 300) and has been seen to hang.
-// exit: 3 locale not supported, 4 model download timed out, 1 other errors
+// that download gets SEC seconds (1..86400; vidx passes VIDX_APPLE_TIMEOUT) and has been seen to hang.
+// exit: 2 usage, 3 locale not supported, 4 model download timed out, 1 other errors
 import AVFoundation
 import Foundation
 import Speech
@@ -24,15 +24,13 @@ if args == ["--locales"] {
     print("installed:", i.joined(separator: " "))
     exit(0)
 }
-var timeout = 300.0
-if args.count >= 2 && args[0] == "--timeout" {
-    guard let t = Double(args[1]), t > 0 else { fail("--timeout needs a positive number of seconds", 2) }
-    timeout = t
-    args.removeFirst(2)
+let usage = "usage: apple_asr --timeout SEC <locale> <audio> <out.json> | --locales"
+guard args.count == 5 && args[0] == "--timeout" else { fail(usage, 2) }
+// capped, so the nanoseconds below always fit a UInt64 (inf or 1e12 s would trap); NaN fails both tests
+guard let downloadTimeout = Double(args[1]), downloadTimeout > 0, downloadTimeout <= 86400 else {
+    fail("--timeout needs 1..86400 seconds, got '\(args[1])'", 2)
 }
-guard args.count == 3 else { fail("usage: apple_asr [--timeout SEC] <locale> <audio> <out.json> | --locales", 2) }
-
-let downloadTimeout = timeout
+args.removeFirst(2)
 let supported = await SpeechTranscriber.supportedLocales
 let wanted = args[0]
 var match = supported.first { $0.identifier(.bcp47) == wanted }

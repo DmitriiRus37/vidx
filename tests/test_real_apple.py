@@ -32,8 +32,24 @@ def test_every_mapped_locale_is_supported(apple_asr):
 
 
 def test_unsupported_locale_exit_3(apple_asr, tmp_path):
-    r = subprocess.run([apple_asr, "de-XX", "x.wav", str(tmp_path / "o.json")], capture_output=True, text=True)
+    r = subprocess.run([apple_asr, "--timeout", "60", "de-XX", "x.wav", str(tmp_path / "o.json")],
+                       capture_output=True, text=True)
     assert r.returncode == 3
+
+
+@pytest.mark.parametrize("t", ["inf", "nan", "1e12", "86401", "0", "-1", "x"])
+def test_timeout_out_of_range_is_a_usage_error(apple_asr, tmp_path, t):
+    """1..86400 s only: inf or 1e12 seconds would trap converting to nanoseconds. en-US (installed with
+    macOS) so that a helper that wrongly accepted the value still never starts a model download."""
+    r = subprocess.run([apple_asr, "--timeout", t, "en-US", "x.wav", str(tmp_path / "o.json")],
+                       capture_output=True, text=True)
+    assert r.returncode == 2, r.stderr
+
+
+def test_timeout_is_required(apple_asr, tmp_path):
+    """vidx owns the default (VIDX_APPLE_TIMEOUT), so the helper has none of its own."""
+    r = subprocess.run([apple_asr, "en-US", "x.wav", str(tmp_path / "o.json")], capture_output=True, text=True)
+    assert r.returncode == 2 and "usage" in r.stderr
 
 
 def test_installed_locale_transcribes(apple_asr, tmp_path):
