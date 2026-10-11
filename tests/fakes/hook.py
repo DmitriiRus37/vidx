@@ -28,7 +28,7 @@ def apply(rt):
     platform = rt.env.get("VIDX_FAKE_PLATFORM")
     if platform:
         rt.platform = platform
-    rt.registry = reg = Registry(rt.platform, rt.home, helper_python=py)
+    rt.registry = reg = Registry(rt.platform, rt.home, helper_python=py, env=rt.env)
     for name, engine in reg.engines.items():
         if engine:  # whisper and turbo are one CLI (mlx_whisper); the fake tells them apart by the model
             engine.program, engine.drop = fake("whisper" if name == "turbo" else name), None

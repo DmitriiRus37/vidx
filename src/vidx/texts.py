@@ -3,7 +3,7 @@
 USAGE = """\
 vidx — extract pictures and text from a video file or a YouTube / any yt-dlp URL.
 Runs every local speech recognizer, OCRs the screen, and merges it all into one
-transcript. Everything runs on this Mac; nothing is uploaded.
+transcript. Everything runs on ${MACHINE}; nothing is uploaded.
 
 USAGE
   vidx <file|url> [options]           extract (default command)
@@ -73,25 +73,13 @@ SPEECH
                            gigaam · parakeet · apple · turbo
                          so -j 2..3 keeps both GPU and CPU busy. Job output
                          then goes to logs/<job>.log. RAM: whisper ~4 GB,
-                         vosk ru ~6 GB, others 1-3 GB; on a 16 GB Mac use -j 2
+                         vosk ru ~6 GB, others 1-3 GB; on a 16 GB ${MACHINE_SHORT} use -j 2
   -g, --glossary FILE    domain terms, see GLOSSARY below
       --cut A-B          drop a time range from transcript.md/.txt, e.g.
                          --cut 36:30-50:00 (repeatable; [h:]m:s or seconds)
 
-  engine    model                        languages          runs on  speed*
-  whisper   whisper-large-v3 (MLX)       99, forced         GPU      ~4 min
-  parakeet  parakeet-tdt-0.6b-v3 (MLX)   25 European        GPU      ~1 min
-  gigaam    GigaAM-v3 e2e_rnnt (Sber)    ru only            GPU      ~3 min
-  turbo     whisper-large-v3-turbo       99, forced         GPU      ~2 min
-  apple     macOS SpeechTranscriber      en de fr it es     ANE      ~1 min
-                                         ja zh hi; no ru
-  vosk      Kaldi vosk-model-<lang>      ru en de fr it es  CPU      ~60 min
-                                         ja zh hi uk ar
-  youtube   manual + auto subtitles      as published       —        download
-  * rough, per hour of audio on Apple Silicon, one job at a time
-  apple downloads its speech model per locale on first use; the download
-  gets VIDX_APPLE_TIMEOUT seconds (default ${APPLE_TIMEOUT_DEFAULT}, at most 86400), then
-  the engine fails.
+${ENGINE_TABLE}  Other models: VIDX_MODEL_WHISPER, VIDX_MODEL_TURBO (also language ID),
+  VIDX_MODEL_PARAKEET, VIDX_VOSK_<LANG> (e.g. VIDX_VOSK_RU=vosk-model-small-ru-0.22).
 
   Merge, per language region: base = first fitting source of GigaAM, whisper,
   parakeet, turbo, apple, YouTube, Vosk. A base chunk is swapped for parakeet/
@@ -110,7 +98,7 @@ PICTURES
       --crop             crop frames to the non-dark screen-share area
       --meet             Google Meet recordings: --roi 0.75 --crop
                          (ignores the participant tiles on the right)
-  OCR (Apple Vision) reads the run's languages plus English (be: ru + uk), one
+  OCR (${OCR_NAME}) reads the run's languages plus English (be: ru + uk), one
   pass per script (Latin/Cyrillic, CJK, Arabic, Devanagari...).
 
 SKIP STEPS
@@ -161,26 +149,40 @@ with its file stem from asr/, e.g. gigaam, whisper-large-v3, parakeet.
   vidx find meeting_vidx-out 'deadline' gigaam
 """
 
-SETUP = """\
-vidx setup
-
-Installs or upgrades, then downloads every model once (re-running is safe):
-  brew        ffmpeg, deno (JS runtime yt-dlp needs for YouTube), uv
-  uv tool     ${TOOLS}
-  .venv       Python ${PY_VERSION}: ${HELPER_PKGS}
-  .venv-giga  Python ${PY_GIGA_VERSION}: GigaAM (pinned commit) + torch, torchaudio, soundfile
-              (GigaAM needs onnxruntime 1.23, which has no Python 3.14 build)
-Existing venvs are kept; delete .venv / .venv-giga to rebuild them. Override the
-versions with VIDX_PYTHON / VIDX_PYTHON_GIGA.
-  lib/        ocr, apple_asr (compiled from Swift)
-  models/     vosk-model-ru-0.42 (1.8 GB; other languages' models are fetched on first use)
-  HF cache    whisper-large-v3, whisper-large-v3-turbo, parakeet-tdt-0.6b-v3
-  ~/.cache/gigaam  GigaAM v3_e2e_rnnt
-"""
-
 
 def render(text, **values):
     """Fill the ${NAME} placeholders of a help text."""
     from string import Template
 
     return Template(text).substitute(values)
+
+
+# The engine table of `vidx help run`, per platform
+ENGINE_TABLE = {"darwin": """\
+  engine    model                        languages          runs on  speed*
+  whisper   whisper-large-v3 (MLX)       99, forced         GPU      ~4 min
+  parakeet  parakeet-tdt-0.6b-v3 (MLX)   25 European        GPU      ~1 min
+  gigaam    GigaAM-v3 e2e_rnnt (Sber)    ru only            GPU      ~3 min
+  turbo     whisper-large-v3-turbo       99, forced         GPU      ~2 min
+  apple     macOS SpeechTranscriber      en de fr it es     ANE      ~1 min
+                                         ja zh hi; no ru
+  vosk      Kaldi vosk-model-<lang>      ru en de fr it es  CPU      ~60 min
+                                         ja zh hi uk ar
+  youtube   manual + auto subtitles      as published       —        download
+  * rough, per hour of audio on Apple Silicon, one job at a time
+  apple downloads its speech model per locale on first use; the download
+  gets VIDX_APPLE_TIMEOUT seconds (default ${APPLE_TIMEOUT_DEFAULT}, at most 86400), then
+  the engine fails.
+""", "portable": """\
+  engine    model                        languages          runs on
+  whisper   whisper-large-v3             99, forced         CUDA or CPU (faster-whisper)
+  parakeet  parakeet-tdt-0.6b-v3         25 European        CUDA, DirectML or CPU (onnx-asr)
+  gigaam    GigaAM-v3 e2e_rnnt (Sber)    ru only            CUDA or CPU (PyTorch)
+  turbo     whisper-large-v3-turbo       99, forced         CUDA or CPU (faster-whisper)
+  apple     macOS SpeechTranscriber: not available on this platform (skipped)
+  vosk      Kaldi vosk-model-<lang>      ru en de fr it es  CPU
+                                         ja zh hi uk ar
+  youtube   manual + auto subtitles      as published       —
+  vidx setup reports the device of each engine. Without a GPU whisper large-v3 is
+  slow: VIDX_MODEL_WHISPER=large-v3-turbo trades some accuracy for speed.
+"""}

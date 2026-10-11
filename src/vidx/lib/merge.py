@@ -1,9 +1,11 @@
 """Align every text source in 40 s windows and build one merged transcript.
 
 usage: merge.py <out_dir> [--langs ru,en] [--sources a,b] [--glossary FILE] [--cut START-END ...]
+                [--ocr-name NAME]
   --sources  asr/ file stems made by this run (default: every asr/*.json; stale files from runs with
              other options are ignored when given)
   --cut      seconds; chunks starting inside are dropped from the transcript
+  --ocr-name the OCR backend, for the ocr.md header (default: Apple Vision OCR)
 Reads asr/*.json, subs/*.json3, ocr/ocr.jsonl, frames/frames.json, info.json, regions.json.
 Writes aligned.md, transcript.md, transcript.txt, ocr.md.
 
@@ -51,6 +53,7 @@ def args():
     ap.add_argument("--sources")
     ap.add_argument("--glossary")
     ap.add_argument("--cut", action="append", default=[])
+    ap.add_argument("--ocr-name", default="Apple Vision OCR")
     return ap.parse_args()
 
 
@@ -301,11 +304,11 @@ def write_aligned(out, sources, ocr, langs):
             t += WINDOW_S
 
 
-def write_ocr(out, ocr):
+def write_ocr(out, ocr, name="Apple Vision OCR"):
     """ocr.md: the on-screen text of every frame, fenced as code (so it needs no escaping)."""
     if ocr:
         with open(os.path.join(out, "ocr.md"), "w", encoding="utf-8", newline="\n") as f:
-            f.write("# On-screen text (Apple Vision OCR)\n\n")
+            f.write(f"# On-screen text ({name})\n\n")
             for r in ocr:
                 q = fence(r["text"])
                 f.write(f"## {hms(r['t'])} · frames/unique/{r['file']}\n\n{q}\n{r['text']}\n{q}\n\n")
@@ -322,7 +325,7 @@ def main():
     write_transcript(out, read_json(os.path.join(out, "info.json"), {}), langs, regions, sources, ocr, merged,
                      fallbacks, used)
     write_aligned(out, sources, ocr, langs)
-    write_ocr(out, ocr)
+    write_ocr(out, ocr, a.ocr_name)
     print(f"  merge: {len(regions)} regions, {len(merged)} chunks {used}, {fallbacks} fallbacks, "
           f"ocr frames={len(ocr)}", file=sys.stderr)
 

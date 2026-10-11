@@ -19,7 +19,7 @@ tests/fakes/hook.py swaps every program for tests/fakes/engine.py.
 """
 import os
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from vidx import paths
 
@@ -39,6 +39,7 @@ class Engine:
     program: list  # argv prefix; the engine's arguments follow
     runs_on: str = ""  # for the help text
     drop: str | None = None  # stderr lines containing this are not shown
+    env: dict = field(default_factory=dict)  # added to the environment of the program
 
     def argv(self, *args):
         return [*self.program, *map(str, args)]
@@ -56,10 +57,14 @@ class LanguageID:
 
 
 class Registry:
-    """The engines of one platform; home holds the venvs (paths.home())."""
+    """The engines of one platform; home holds the venvs (paths.home()). VIDX_MODEL_WHISPER, VIDX_MODEL_TURBO
+    and VIDX_MODEL_PARAKEET in env replace a model (small machines, smoke runs); language ID uses turbo's."""
 
-    def __init__(self, platform, home, helper_python=None):
+    def __init__(self, platform, home, helper_python=None, env=None):
         self.platform, self.home = platform, home
+        env = os.environ if env is None else env
+        mlx = {k: env.get(f"VIDX_MODEL_{k.upper()}") or v for k, v in MLX.items()}
+        portable = {k: env.get(f"VIDX_MODEL_{k.upper()}") or v for k, v in PORTABLE.items()}
         self.helper_python = helper_python or paths.venv_python(os.path.join(home, ".venv"), platform)
         self.bin = os.path.join(home, "bin")  # compiled Swift helpers (macOS)
         self.models = os.path.join(home, "models")
@@ -72,27 +77,28 @@ class Registry:
         }
         if platform == "darwin":
             self.engines = {
-                "whisper": Engine("whisper", MLX["whisper"], ["mlx_whisper"], "GPU (MLX)"),
-                "turbo": Engine("turbo", MLX["turbo"], ["mlx_whisper"], "GPU (MLX)"),
-                "parakeet": Engine("parakeet", MLX["parakeet"], ["parakeet-mlx"], "GPU (MLX)"),
+                "whisper": Engine("whisper", mlx["whisper"], ["mlx_whisper"], "GPU (MLX)"),
+                "turbo": Engine("turbo", mlx["turbo"], ["mlx_whisper"], "GPU (MLX)"),
+                "parakeet": Engine("parakeet", mlx["parakeet"], ["parakeet-mlx"], "GPU (MLX)"),
                 "apple": Engine("apple", "", [os.path.join(self.bin, "apple_asr")], "ANE"),
                 "ocr": Engine("ocr", "Apple Vision", [os.path.join(self.bin, "ocr")]),
                 **common,
             }
-            self.lid = LanguageID(MLX["turbo"], [])  # the interpreter is resolved on first use (uv tool dir)
+            self.lid = LanguageID(mlx["turbo"], [])  # the interpreter is resolved on first use (uv tool dir)
         else:
             whisper_py = venv(".venv-whisper")
             fw = [whisper_py, str(lib / "whisper_fw.py")]
             self.engines = {
-                "whisper": Engine("whisper", PORTABLE["whisper"], fw, "CUDA or CPU (faster-whisper)"),
-                "turbo": Engine("turbo", PORTABLE["turbo"], fw, "CUDA or CPU (faster-whisper)"),
-                "parakeet": Engine("parakeet", PORTABLE["parakeet"],
+                "whisper": Engine("whisper", portable["whisper"], fw, "CUDA or CPU (faster-whisper)"),
+                "turbo": Engine("turbo", portable["turbo"], fw, "CUDA or CPU (faster-whisper)"),
+                "parakeet": Engine("parakeet", portable["parakeet"],
                                    [venv(".venv-onnx"), str(lib / "parakeet_onnx.py")], "CUDA/DirectML/CPU (onnx-asr)"),
                 "apple": None,  # Apple's SpeechTranscriber: macOS only
-                "ocr": Engine("ocr", "RapidOCR", [whisper_py, str(lib / "ocr_rapid.py")]),
+                "ocr": Engine("ocr", "RapidOCR", [whisper_py, str(lib / "ocr_rapid.py")],
+                              env={"VIDX_RAPIDOCR_MODELS": os.path.join(self.models, "rapidocr")}),
                 **common,
             }
-            self.lid = LanguageID(PORTABLE["turbo"], [whisper_py])
+            self.lid = LanguageID(portable["turbo"], [whisper_py])
 
     def get(self, name):
         """The engine, or None if this platform has no backend for it."""
@@ -105,6 +111,9 @@ class Registry:
 
     def uv_tool_dir(self):
         if self._uv_tool_dir is None:
-            r = subprocess.run(["uv", "tool", "dir"], capture_output=True, text=True)
-            self._uv_tool_dir = r.stdout.strip()
+            try:
+                r = subprocess.run(["uv", "tool", "dir"], capture_output=True, text=True)
+                self._uv_tool_dir = r.stdout.strip()
+            except OSError:  # no uv: vidx setup says how to install it
+                self._uv_tool_dir = ""
         return self._uv_tool_dir

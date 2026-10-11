@@ -42,3 +42,26 @@ def test_roi_ignores_the_right_side():
     ImageDraw.Draw(b).rectangle([1500, 0, 1920, 1080], fill="black")  # e.g. Meet participant tiles
     assert not frames.duplicate(frames.signature(a, 1), frames.signature(b, 1), DEDUP)
     assert frames.duplicate(frames.signature(a, 0.75), frames.signature(b, 0.75), DEDUP)
+
+
+def label_height(font):
+    from PIL import Image, ImageDraw
+
+    box = ImageDraw.Draw(Image.new("RGB", (200, 50))).textbbox((0, 0), "01:02:03", font=font)
+    return box[3] - box[1]
+
+
+def test_contact_sheet_label_font_is_readable_without_arial(monkeypatch):
+    """Linux and Windows have no /System/Library/Fonts: the label falls back to Pillow's own scalable font at
+    the same size, not to its 10 px bitmap font."""
+    from PIL import ImageFont
+
+    real = ImageFont.truetype
+
+    def no_arial(path, *a, **k):
+        if "Arial" in str(path):
+            raise OSError("cannot open resource")
+        return real(path, *a, **k)
+
+    monkeypatch.setattr(ImageFont, "truetype", no_arial)
+    assert label_height(frames.label_font()) >= 15  # digits of a 22 px font

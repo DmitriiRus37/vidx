@@ -73,3 +73,48 @@ def test_default_run_per_platform(tmp_path, platform):
     want = ["whisper-large-v3.json", "vosk.json", "parakeet.json", "whisper-turbo.json", *(f"{a}.json" for a in apple)]
     assert sorted(p.name for p in (out / "asr").iterdir()) == sorted(want)
     assert (out / "transcript.txt").read_text(encoding="utf-8") == "[00:00:00] Fake whisper en.\n"
+
+
+def test_rapidocr_models_live_in_home():
+    reg = Registry("linux", "/h")
+    assert reg.get("ocr").env == {"VIDX_RAPIDOCR_MODELS": "/h/models/rapidocr"}
+    assert Registry("darwin", "/h").get("ocr").env == {}
+
+
+@needs_ffmpeg
+@pytest.mark.parametrize("platform, header", [("darwin", "# On-screen text (Apple Vision OCR)"),
+                                              ("linux", "# On-screen text (RapidOCR)")])
+def test_ocr_md_names_the_backend(tmp_path, platform, header):
+    r = run_vidx(FIXTURE, "-l", "ru", "-o", "out", "-e", "whisper", tmp_path=tmp_path,
+                 env={"VIDX_FAKE_PLATFORM": platform})
+    assert r.returncode == 0, r.stderr
+    assert (tmp_path / "out" / "ocr.md").read_text(encoding="utf-8").splitlines()[0] == header
+
+
+@pytest.mark.parametrize("platform", ["darwin", "linux"])
+def test_model_overrides(platform):
+    """Smaller models for small machines and smoke runs; language ID follows turbo."""
+    env = {"VIDX_MODEL_WHISPER": "tiny", "VIDX_MODEL_TURBO": "base", "VIDX_MODEL_PARAKEET": "my-parakeet"}
+    reg = Registry(platform, "/h", env=env)
+    assert (reg.get("whisper").model, reg.get("turbo").model, reg.get("parakeet").model) == ("tiny", "base",
+                                                                                             "my-parakeet")
+    assert reg.lid.model == "base"
+
+
+@needs_ffmpeg
+def test_vosk_model_override(tmp_path):
+    r = run_vidx(FIXTURE, "-l", "ru", "-o", "out", "-e", "vosk", tmp_path=tmp_path,
+                 env={"VIDX_VOSK_RU": "vosk-model-small-ru-0.22"})
+    assert r.returncode == 0, r.stderr
+    (call,) = [c for c in fake_calls(tmp_path) if c["engine"] == "vosk"]
+    assert call["args"][0].endswith("vosk-model-small-ru-0.22")
+    assert (tmp_path / "out" / ".vidx" / "vosk.json.params").read_text(encoding="utf-8") == "vosk-model-small-ru-0.22"
+
+
+@needs_ffmpeg
+def test_whisper_model_override_in_a_run(tmp_path):
+    r = run_vidx(FIXTURE, "-l", "ru", "-o", "out", "-e", "whisper", tmp_path=tmp_path,
+                 env={"VIDX_MODEL_WHISPER": "tiny"})
+    assert r.returncode == 0, r.stderr
+    (call,) = [c for c in fake_calls(tmp_path) if c["engine"] == "whisper"]
+    assert call["args"][1:3] == ["--model", "tiny"]

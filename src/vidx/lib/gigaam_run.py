@@ -5,6 +5,7 @@ usage: gigaam_run.py <audio.wav 16k mono> <out.json> [regions.json]
 regions.json (mixed-language runs): only the "ru" regions are transcribed, cut separately, so no
 chunk crosses a language switch (GigaAM turns English speech into Latin-letter gibberish).
 out.json: {"engine": "gigaam", "segments": [{"start", "end", "text"}]}
+Device: CUDA (NVIDIA), else MPS (Apple), else CPU; VIDX_GIGAAM_DEVICE=cuda|mps|cpu forces one.
 """
 import json
 import os
@@ -12,19 +13,29 @@ import sys
 import tempfile
 
 import numpy as np
-import soundfile as sf
 from common import pause_cuts
 
 CHUNK_MIN_S, CHUNK_MAX_S = 14, 22  # GigaAM refuses audio longer than 25 s
+
+
+def device(torch):
+    forced = os.environ.get("VIDX_GIGAAM_DEVICE")
+    if forced:
+        return forced
+    if torch.cuda.is_available():
+        return "cuda"
+    mps = getattr(torch.backends, "mps", None)
+    return "mps" if mps is not None and mps.is_available() else "cpu"
 
 
 def main():
     src, out = sys.argv[1], sys.argv[2]
     name = "v3_e2e_rnnt"  # e2e = with punctuation
     import gigaam
+    import soundfile as sf
     import torch
 
-    model = gigaam.load_model(name, device="mps" if torch.backends.mps.is_available() else "cpu")
+    model = gigaam.load_model(name, device=device(torch))
     x, sr = sf.read(src, dtype="float32")
     spans = [(0, len(x))]
     if len(sys.argv) > 3:

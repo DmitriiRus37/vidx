@@ -41,7 +41,7 @@ class Runtime:
         self.env = os.environ if env is None else env
         self.platform = paths.platform_of()
         self.home = paths.home(self.env, self.platform)
-        self.registry = Registry(self.platform, self.home)
+        self.registry = Registry(self.platform, self.home, env=self.env)
         self.fake = False
         if self.env.get("VIDX_FAKE_ENGINES") == "1":
             self.apply_fake_hook()
@@ -323,7 +323,7 @@ class Run:
         jobs.run_job(jobs.Job(label, output, params, body), self.out, background=False)
 
     def engine_job(self, engine, *args):
-        return jobs.command(engine.argv(*args), drop=engine.drop)
+        return jobs.command(engine.argv(*args), drop=engine.drop, env=engine.env)
 
     def parakeet_job(self):
         p = self.reg.get("parakeet")
@@ -402,7 +402,7 @@ class Run:
             queue_whisper("whisper", "whisper large-v3", "whisper-large-v3")
             if not self.unavailable("vosk", "Vosk"):
                 for lang, row, c in zip(self.langs, rows, clips, strict=False):
-                    s, m = self.tag("vosk", lang), row.vosk_model
+                    s, m = self.tag("vosk", lang), self.rt.env.get(f"VIDX_VOSK_{lang.upper()}") or row.vosk_model
                     if c == "none":
                         log(f"Vosk [{lang}]: no {lang} regions, skipped")
                     elif not m:
@@ -504,7 +504,7 @@ class Run:
             open(tmp, "wb").close()
             for batch in batches(files):
                 part = tmp + ".part"
-                rc = ctx.call(ocr.argv(self.ocr_langs, *batch), stdout=part)
+                rc = ctx.call(ocr.argv(self.ocr_langs, *batch), stdout=part, env=ocr.env)
                 with open(part, "rb") as f, open(tmp, "ab") as t:
                     t.write(f.read())
                 os.remove(part)
@@ -527,6 +527,8 @@ class Run:
             args += ["--sources", ",".join(self.sources)]
         for c in self.o.cuts:
             args += ["--cut", c]
+        if self.reg.get("ocr").model != "Apple Vision":
+            args += ["--ocr-name", self.reg.get("ocr").model]
         if jobs.Context().call([self.rt.helper_python, str(paths.LIB / "merge.py"), self.out.path, *args]) != 0:
             raise Fatal("merge failed")
         failed = self.out.failed()

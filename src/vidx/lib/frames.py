@@ -23,6 +23,7 @@ LOOKBACK = 6  # also compare with a few earlier keepers: slides get revisited
 CHANGED_LEVEL, CHANGED_SHARE = 25, 0.01
 DARK_LEVEL, CONTENT_SHARE = 45, 0.02  # crop: a row/column is content if > 2 % of it is brighter than 45
 SHEET_COLS, SHEET_FRAMES, TILE_W, TILE_H = 4, 20, 480, 270
+LABEL_PX = 22
 
 
 def signature(im, roi):
@@ -45,6 +46,14 @@ def cropped(im, roi):
     if len(rows) < 10 or len(cols) < 10:
         return im
     return im.crop((int(cols[0]), int(rows[0]), int(cols[-1]) + 1, int(rows[-1]) + 1))
+
+
+def label_font():
+    """Timestamp label: Arial Bold on macOS; elsewhere Pillow's bundled scalable font at the same size."""
+    try:
+        return ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial Bold.ttf", LABEL_PX)
+    except OSError:
+        return ImageFont.load_default(size=LABEL_PX)
 
 
 def main():
@@ -75,10 +84,7 @@ def main():
 
     sheets = os.path.join(out_dir, "sheets")
     os.makedirs(sheets, exist_ok=True)
-    try:
-        font = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial Bold.ttf", 22)
-    except OSError:
-        font = ImageFont.load_default()
+    font = label_font()
     for p in range(0, len(kept), SHEET_FRAMES):
         chunk = kept[p:p + SHEET_FRAMES]
         sheet = Image.new("RGB", (SHEET_COLS * TILE_W, ((len(chunk) + SHEET_COLS - 1) // SHEET_COLS) * TILE_H), "black")

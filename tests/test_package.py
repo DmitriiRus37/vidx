@@ -54,3 +54,16 @@ def test_launcher_ignores_the_current_directory(tmp_path):
     (tmp_path / "vidx" / "__init__.py").write_text("raise SystemExit('planted')\n", encoding="utf-8", newline="\n")
     r = subprocess.run(["sh", str(VIDX), "help"], cwd=tmp_path, capture_output=True, text=True, timeout=120)
     assert r.returncode == 0 and "planted" not in r.stderr
+
+
+def test_help_per_platform():
+    from vidx import cli, texts
+
+    mac = texts.render(texts.RUN, **cli.help_values("darwin"))
+    assert "whisper-large-v3 (MLX)" in mac and "OCR (Apple Vision)" in mac and "16 GB Mac" in mac
+    assert "VIDX_APPLE_TIMEOUT seconds (default 300, at most 86400)" in mac
+    for platform in ("linux", "win32"):
+        other = texts.render(texts.RUN, **cli.help_values(platform))
+        assert "faster-whisper" in other and "MLX" not in other and "OCR (RapidOCR)" in other
+        assert "not available on this platform" in other
+        assert "this computer" in texts.render(texts.USAGE, **cli.help_values(platform))

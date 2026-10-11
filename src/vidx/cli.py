@@ -3,17 +3,26 @@
 import os
 import sys
 
-from vidx import install, jobs, log, paths, texts
+from vidx import jobs, log, paths, texts
 from vidx.options import APPLE_TIMEOUT_DEFAULT, ShowHelp, Usage, parse_run
 
 
-def help_values():
+def help_platform(env=None):
+    """This platform; in fake-engine runs (tests) the one they simulate."""
+    env = os.environ if env is None else env
+    fake = env.get("VIDX_FAKE_ENGINES") == "1" and env.get("VIDX_FAKE_PLATFORM")
+    return fake or paths.platform_of()
+
+
+def help_values(platform=None):
+    platform = platform or help_platform()
     root = paths.checkout()
+    darwin = platform == "darwin"
+    table = texts.ENGINE_TABLE["darwin" if darwin else "portable"]
     return dict(VIDX_DIR=str(root) if root else "https://github.com/DmitriiRus37/vidx/blob/main",
-                APPLE_TIMEOUT_DEFAULT=APPLE_TIMEOUT_DEFAULT, TOOLS=" ".join(install.TOOLS),
-                HELPER_PKGS=" ".join(install.HELPER_PKGS),
-                PY_VERSION=os.environ.get("VIDX_PYTHON") or install.PY_VERSION_DEFAULT,
-                PY_GIGA_VERSION=os.environ.get("VIDX_PYTHON_GIGA") or install.PY_GIGA_VERSION_DEFAULT)
+                APPLE_TIMEOUT_DEFAULT=APPLE_TIMEOUT_DEFAULT, MACHINE="this Mac" if darwin else "this computer",
+                MACHINE_SHORT="Mac" if darwin else "machine", OCR_NAME="Apple Vision" if darwin else "RapidOCR",
+                ENGINE_TABLE=texts.render(table, APPLE_TIMEOUT_DEFAULT=APPLE_TIMEOUT_DEFAULT))
 
 
 def show(text):
@@ -49,17 +58,17 @@ def dispatch(args):
     if cmd in ("-h", "--help"):
         show(texts.USAGE)
         return 0
+    from vidx import setup
+
     if cmd == "help":
-        show({"run": texts.RUN, "find": texts.FIND, "setup": texts.SETUP}.get(args[1] if len(args) > 1 else "",
-                                                                             texts.USAGE))
+        show({"run": texts.RUN, "find": texts.FIND, "setup": setup.__doc__}.get(args[1] if len(args) > 1 else "",
+                                                                               texts.USAGE))
         return 0
     if cmd == "setup":
         if args[1:2] in (["-h"], ["--help"]):
-            show(texts.SETUP)
+            show(setup.__doc__)
             return 0
-        from vidx import setup
-
-        return setup.run()
+        return setup.run(args[1:])
     if cmd == "find":
         if args[1:2] in (["-h"], ["--help"]):
             show(texts.FIND)
