@@ -6,8 +6,9 @@ Extract pictures and text from a video file or a YouTube (any yt-dlp) URL. It ru
 recognizer available on Apple Silicon, OCRs the screen, and merges everything into one transcript.
 Everything runs on the Mac; audio and video are never uploaded.
 
-Built for long Russian-language meeting recordings with screen sharing; it works for any language
-whisper knows, and handles videos that switch between Russian and English.
+Built for long Russian-language meeting recordings with screen sharing. It is tuned for 12 languages
+(ru, en, de, fr, it, es, ja, zh, hi, be, uk, ar), works for any other language whisper knows, and
+handles videos that switch between any number of languages (`-l uk,en,de`).
 
 ```bash
 vidx setup                                         # once: tools + ~13 GB of models
@@ -23,8 +24,8 @@ Requirements: macOS 26+ on Apple Silicon (MLX, SpeechTranscriber), Homebrew, Xco
 ## How it works
 
 ```
-input ─► 1 source ─► 2 audio ─► 3 language ─┬─(mixed)─► parakeet ─► language regions ─┐
-                                            └──────────────────────────────────────────┤
+input ─► 1 source ─► 2 audio ─► 3 language ─┬─(mixed)─► language ID per piece ─► regions ─┐
+                                            └─────────────────────────────────────────────┤
                                                                                        ▼
                              job queue (-j N):  4 speech engines  │  5 frames ─► OCR
                                                                                        ▼
@@ -69,11 +70,13 @@ message; `--no-asr` skips steps 2–4 and gives pictures and OCR only.
 
 ### 3. Language
 
-`--lang` takes `auto`, one language (`ru`) or a list (`ru,en`).
+`--lang` takes `auto`, one language (`ru`) or a list of any length (`ru,en`, `uk,en,de`). Repeated
+codes are dropped. Every language has one row in [lib/languages.py](lib/languages.py); see
+[Languages](#languages).
 
-`auto` ([lib/detect_lang.py](lib/detect_lang.py)): whisper turbo detects the language of evenly
+`auto` ([lib/detect_lang.py](lib/detect_lang.py)): whisper turbo identifies the language of evenly
 spaced 10 s clips, one per minute of audio (5 to 30 clips). The most frequent language is always kept;
-another one only if it wins at least 2 clips **and** 20 % of them, so a single misdetected clip does
+another one only if it wins at least 2 clips **and** 20 % of them, so a single misidentified clip does
 not make a video mixed. No speech at all → `ru`. The result is cached in `lang.txt`. Short videos and
 short switches (one English question in a Russian meeting) are therefore not detected as mixed: pass
 `-l ru,en` explicitly.
@@ -82,27 +85,35 @@ Russian speech with English jargon (Kubernetes, deploy, Jenkins) is **not** mixe
 glossary. Mixed means whole passages in different languages.
 
 **Language regions (mixed runs only).** Engines that are told a language misbehave on the other
-one: whisper `--language en` *translates* Russian speech into English, GigaAM turns English speech
-into Latin-letter gibberish. So before the job queue:
+ones: whisper `--language en` *translates* Russian speech into English, GigaAM turns English speech
+into Latin-letter gibberish. So before the job queue [lib/regions.py](lib/regions.py) splits the
+audio into single-language regions → `regions.json` (`[{start, end, lang}]`):
 
-1. parakeet runs (it is not told a language and handles both).
-2. [lib/regions.py](lib/regions.py) labels each parakeet sentence by script: more Cyrillic than
-   Latin letters → ru, otherwise the other language. Sentences without letters keep the previous
-   label. This separates Cyrillic from Latin languages; it cannot tell English from German.
-3. parakeet often drops a few seconds exactly where the speaker switches. Every gap longer than 1 s
-   gets the language whisper turbo detects on that audio; shorter or silent gaps are split between
-   their neighbours.
-4. Consecutive pieces with the same label become a region → `regions.json`
-   (`[{start, end, lang}]`).
+1. **Pieces**: the audio is cut in the middle of every pause; pieces shorter than 2 s join the
+   neighbour behind the shorter pause (the longer pause is the likelier switch), pieces longer than
+   8 s are cut again at their quietest points.
+2. **Language ID per piece** ([lib/lid.py](lib/lid.py), whisper turbo): the probability of every
+   listed language, renormalised over the list. It listens to the audio, not to the letters of a
+   transcript, so it works for any number of languages and for same-script pairs (ru/uk, de/fr).
+3. **Smoothing**: a piece shorter than 2 s or with less than 60 % for its top language follows its
+   neighbours; equal neighbours join into regions; a region shorter than 3 s joins the neighbour its
+   pieces lean to.
+4. **Boundary refinement**: a piece next to a boundary may hold the end of one language and the start
+   of the next. It is cut at its longest inner pause, and the boundary moves there if the part
+   touching it belongs to the other language.
+5. **Snapping**: if parakeet ran (only when it knows every listed language), each boundary moves to
+   the nearest pause between parakeet's sentences within 1.5 s.
+6. A warning when two listed languages could not be told apart reliably.
 
-On a test video (Russian 0–21.7 s, English 21.7–39.1 s, Russian after) the regions came out as
-0–21.4, 21.4–38.9, 38.9–end. If parakeet or the split fails, the run continues with the first
-language only.
+Results on test clips (macOS TTS voices): uk → en → de gave three regions whose boundaries (6.1 s,
+11.3 s) fall in the middle of the pauses at the two switches; ru → uk and de → fr are within 0.15 s of
+the switch. If the split fails, the run continues with the first language only.
 
 ### 4. Speech engines (job queue)
 
-Each engine writes `asr/<name>.json`: a list of `{start, end, text}` segments. In a mixed run, the
-engines that are told the language run once per language and get an `@lang` suffix
+Each engine writes `asr/<name>.json`: a list of `{start, end, text}` segments. Engines run only for
+languages they support (table in [Languages](#languages)). In a mixed run, the engines that are told
+the language run once per language that got a region and get an `@lang` suffix
 (`whisper-large-v3@en`); whisper and turbo then transcribe only that language's regions
 (`--clip-timestamps`), GigaAM only the Russian regions. Vosk and Apple run on the whole file; the
 merge ignores their output outside their language.
@@ -110,10 +121,10 @@ merge ignores their output outside their language.
 | Engine | Model | Language | Runs on | Notes |
 |---|---|---|---|---|
 | whisper | whisper-large-v3 (mlx-whisper) | forced, once per language | GPU | glossary prompt, `--condition-on-previous-text False` against repetition loops |
-| vosk | Kaldi vosk-model-ru-0.42 / en-us-0.22 | once per language (ru, en) | CPU | models fetched on first use; about real time |
+| vosk | Kaldi vosk-model-&lt;lang&gt; | once per language with a model | CPU | models fetched on first use (0.3–1.9 GB each); about real time |
 | gigaam | GigaAM-v3 e2e_rnnt (Sber) | Russian only | GPU (MPS) | see below |
-| parakeet | parakeet-tdt-0.6b-v3 (parakeet-mlx) | any of 25 European, not forced | GPU | its own 120 s chunking; in mixed runs it runs first and defines the regions |
-| apple | macOS SpeechTranscriber | once per supported language | Neural Engine | no Russian, so skipped for ru |
+| parakeet | parakeet-tdt-0.6b-v3 (parakeet-mlx) | its 25 European languages, never told which | GPU | its own 120 s chunking; on other languages it writes romanised gibberish, so it does not run there; in mixed runs it runs first and its sentence edges refine the regions |
+| apple | macOS SpeechTranscriber | once per supported language, explicit locale (de → de-DE) | Neural Engine | no Russian; downloads its model per locale on first use, given `VIDX_APPLE_TIMEOUT` seconds (default 300, at most 86400) |
 | turbo | whisper-large-v3-turbo | forced, once per language | GPU | backup for whisper |
 
 **GigaAM** refuses audio longer than 25 s, so [lib/gigaam_run.py](lib/gigaam_run.py) cuts the audio
@@ -154,16 +165,20 @@ One job, [lib/frames.py](lib/frames.py) and [lib/ocr.swift](lib/ocr.swift):
    non-dark pixels, which is the shared screen.
 4. **Save**: `frames/unique/HH-MM-SS.jpg` (`_1`, `_2` … for several frames in one second), contact
    sheets of 20 frames in `frames/sheets/`, and `frames/frames.json` (file → timestamp) last.
-5. **OCR**: Apple Vision (accurate mode, ru + en, language correction) on every kept frame →
-   `ocr/ocr.jsonl`. No model download, about 0.2 s per frame. New frames always mean new OCR.
+5. **OCR**: Apple Vision (accurate mode, language correction) on every kept frame →
+   `ocr/ocr.jsonl`, for the run's languages plus English (be → ru + uk, which Vision reads). Vision
+   reads only the script of a request's first language, so each script (Latin/Cyrillic, CJK, Arabic,
+   Devanagari) gets its own request and the lines are merged by position. No model download, about
+   0.2 s per frame and script. New frames always mean new OCR.
 
 ### 6. Merge
 
 [lib/merge.py](lib/merge.py) reads the `asr/*.json` files made by this run (files from earlier runs
 with other options are ignored), `subs/*.json3`, the OCR results and `info.json`.
 
-Every source has a language: `gigaam` = ru, `parakeet` = any, `<engine>@<lang>` and
-`youtube-<kind>@<lang>` = that language, other engines = the run's only language.
+Every source has a language: `gigaam` = ru, `parakeet` = any of its 25, `<engine>@<lang>` and
+`youtube-<kind>@<lang>` = that language, other engines = the run's only language. Each region uses its
+language's row of the table: thresholds, joiner, fillers.
 
 **`aligned.md`**: the timeline is cut into 40 s windows. Each segment goes into the window that
 contains its midpoint (so no segment appears twice), consecutive repeats are dropped, and each window
@@ -177,19 +192,27 @@ engine against another.
    the region are taken in order, consecutive repeats dropped.
 2. **Cut**: segments starting inside a `--cut` range are dropped (private talk, breaks).
 3. **Fallback**, per base segment: if it looks like the engine skipped speech, it is replaced with
-   the longer of parakeet / whisper (same language) for the same span, counting only their segments
-   that lie at least 60 % inside it. "Skipped speech" means all of: fewer than 6 characters per
-   second (fillers not counted), the alternative is more than twice as long and longer than 80
-   characters, and the alternative has at most 25 characters per second (otherwise it is probably a
-   repetition loop).
-4. **Clean**: remove hesitation sounds (а-а, э-э, ммм, хм, uh, um), apply the glossary
-   replacements, capitalise sentences.
+   the longest alternative for the same span, counting only segments that lie at least 60 % inside
+   it. The alternatives are parakeet and whisper; where parakeet does not know the language, whisper,
+   turbo and Apple. "Skipped speech" means all of:
+   - fewer characters per second than the language's floor (fillers not counted): 6 for ru/en/uk/be,
+     7 for de/fr/it/es, 3 for ar, 2.5 for ja, 2 for zh;
+   - the alternative is more than twice as long and at least 5 s of the language's normal speech
+     (80 characters for ru/en, 22.5 for zh);
+   - the alternative is not faster than the loop limit (25 for ru/en, 10 for zh), otherwise it is
+     probably a repetition loop.
+4. **Clean**: remove the language's hesitation sounds (а-а, э-э, ммм, хм, uh, um, äh, euh, えー, 呃,
+   …; words like German "um" or Belarusian "ем" stay), apply the glossary replacements, capitalise
+   sentences in any alphabet. Chunks are joined with spaces, without them for Chinese, Japanese,
+   Thai, Lao, Burmese and Khmer.
 5. **Layout**: all regions in time order, ~55 s paragraphs with a timestamp, YouTube chapters as
    headings, and a header with the languages, the number of regions, chunks per source and
    language, and the fallback count.
 
-Text that comes from outside (YouTube titles, chapters, subtitles, OCR) is escaped before it goes
-into Markdown, so it cannot add images, links or HTML to the preview.
+Text that comes from outside (YouTube titles, chapters, subtitles, OCR, engine output) is escaped
+before it goes into Markdown: no images, links (also with nested brackets or a backslash), raw HTML,
+code or block elements (a line break inside a title cannot start a heading). Ordinary punctuation
+such as `!` or `[draft]` stays readable.
 
 Also written: `transcript.txt` (one `[HH:MM:SS] text` line per chunk, not escaped) and `ocr.md`
 (on-screen text per frame).
@@ -215,6 +238,28 @@ prompt: Созвон команды разработки: Kubernetes, Helm, Kafk
   are word boundaries that also work for Cyrillic.
 
 Only `example.txt` is tracked by git; put your own glossaries next to it.
+
+## Languages
+
+One row per language in [lib/languages.py](lib/languages.py): script, Apple locale, OCR languages,
+Vosk model, whether parakeet knows it, joiner, hesitation sounds and the merge thresholds. A code
+outside the table (any other whisper language) gets whisper-only defaults for its script.
+
+| Language | whisper, turbo | parakeet | GigaAM | Apple ASR | Vosk model | OCR (Vision) |
+|---|---|---|---|---|---|---|
+| ru | ✓ | ✓ | ✓ | – | ru-0.42 | ru-RU |
+| en | ✓ | ✓ | – | en-US | en-us-0.22 | en-US |
+| de, fr, it, es | ✓ | ✓ | – | de-DE, fr-FR, it-IT, es-ES | de-0.21, fr-0.22, it-0.22, es-0.42 | ✓ |
+| uk | ✓ | ✓ | – | – | uk-v3 | uk-UA |
+| ja, zh | ✓ | – | – | ja-JP, zh-CN | ja-0.22, cn-0.22 | ja-JP, zh-Hans |
+| hi | ✓ | – | – | hi-IN | hi-0.22 | hi-IN |
+| ar | ✓ | – | – | – | ar-mgb2-0.4 | ar-SA |
+| be | ✓ | – | – | – | – | via ru-RU + uk-UA |
+
+Tested on short macOS TTS clips: auto-detection and transcripts were correct for de, fr, it, es, ja,
+zh, hi, uk and ar. **Belarusian** has no TTS voice and is covered only by unit tests; only whisper and
+turbo support it, so expect the lowest quality. The thresholds were calibrated on TTS speech, which is
+cleaner and faster than real meetings; Russian keeps the values tuned on real recordings.
 
 ## Output folder
 
@@ -246,7 +291,7 @@ Exit status: 0 everything worked, 3 some jobs failed (the rest is merged), 1 usa
 | `.venv` (Python 3.14) | vosk, pillow, numpy (pinned) |
 | `.venv-giga` (Python 3.13) | GigaAM at a pinned commit, torch, torchaudio, soundfile (pinned) |
 | `lib/` | `ocr`, `apple_asr` compiled from Swift |
-| `models/` | vosk-model-ru-0.42 (the English model is fetched on first use) |
+| `models/` | vosk-model-ru-0.42 (the other languages' models are fetched on first use) |
 | Hugging Face cache | whisper-large-v3, whisper-large-v3-turbo, parakeet-tdt-0.6b-v3 |
 | `~/.cache/gigaam` | GigaAM v3_e2e_rnnt |
 
@@ -261,19 +306,44 @@ published).
 The network is used only by yt-dlp, the first model downloads and a short Hugging Face update check
 on each run (`HF_HUB_OFFLINE=1` skips it).
 
+## Development
+
+Tests are written first (TDD) and need no models by default:
+
+```bash
+uv run --isolated --group test pytest                       # unit tests, ~1 min, no models or network
+uv run --isolated --group test --python 3.11 pytest         # the oldest supported Python
+HF_HUB_OFFLINE=1 uv run --isolated --group test pytest -m real   # real models (macOS, after vidx setup)
+uvx ruff check lib/ tests/
+```
+
+- `--isolated` keeps uv from installing into `.venv`, which is vidx's own helper environment.
+- **Fake engines**: with `VIDX_FAKE_ENGINES=1` the script loads `tests/fakes/hook.sh`, which swaps the
+  model calls for `tests/fakes/engine.py`. That writes canned output, so the job queue, stamps,
+  resume, `-j`, failures and Ctrl-C are tested end to end in seconds. The end-to-end tests run the
+  script under the macOS `/bin/bash` 3.2.
+- **Goldens**: `tests/golden/` holds expected transcripts; `VIDX_UPDATE_GOLDENS=1` rewrites them after
+  a deliberate change (review the diff).
+- **Fixtures**: short TTS clips and engine outputs in `tests/fixtures/` (under 400 KB each).
+- The plan for the next steps (Linux and Windows) is in [docs/plans/](docs/plans/).
+
 ## Files
 
 ```
 vidx                  entry point (bash): options, download, audio, language, job queue
-lib/common.py         helpers shared by the Python scripts
-lib/detect_lang.py    spoken-language detection on 10 s clips
+lib/languages.py      everything vidx knows per language, one table
+lib/lid.py            spoken-language ID of a clip (the one backend-specific module)
+lib/detect_lang.py    --lang auto: votes over 10 s clips
 lib/regions.py        mixed speech → single-language regions
+lib/common.py         helpers shared by the Python scripts
 lib/gigaam_run.py     GigaAM on pause-cut chunks
 lib/vosk_run.py       Vosk
-lib/apple_asr.swift   Apple SpeechTranscriber (+ --locales)
+lib/apple_asr.swift   Apple SpeechTranscriber (+ --locales, --timeout)
 lib/frames.py         frame dedup, crop, contact sheets
-lib/ocr.swift         Apple Vision OCR
+lib/ocr.swift         Apple Vision OCR, one request per script
 lib/merge.py          aligned.md, transcript.md/.txt, ocr.md
 lib/find.py           phrase → timecode
 glossaries/example.txt  glossary format
+tests/                pytest suite, fake engines, fixtures, goldens
+docs/plans/           implementation plans
 ```
