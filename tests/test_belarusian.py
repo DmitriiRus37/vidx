@@ -17,7 +17,8 @@ def test_table_row():
 
 @needs_ffmpeg
 def test_only_whisper_and_turbo_run(tmp_path):
-    r = run_vidx(MEDIA / "ru_slides.mp4", "-l", "be", "-o", "out", tmp_path=tmp_path)
+    r = run_vidx(MEDIA / "ru_slides.mp4", "-l", "be", "-o", "out", tmp_path=tmp_path,
+                 env={"VIDX_FAKE_PLATFORM": "darwin"})  # where Apple's engine exists and says why it skips
     assert r.returncode == 0, r.stderr
     calls = fake_calls(tmp_path)
     assert [c["engine"] for c in calls] == ["whisper", "ocr", "turbo"]

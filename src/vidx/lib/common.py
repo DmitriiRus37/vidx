@@ -1,6 +1,7 @@
 """Helpers shared by the vidx scripts. Runs in all three interpreters (.venv, .venv-giga and
 mlx-whisper's own Python); numpy is imported only where it is needed."""
 import json
+import sys
 
 SILENCE_RMS = 1e-3  # float32 RMS below which a clip is treated as silence
 
@@ -13,7 +14,7 @@ def hms(t, sep=":"):
 def load_segments(path):
     """Engine output → [(start, end, text)]. Accepts {"segments": [...]}, parakeet's
     {"sentences": [...]} and a bare list."""
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         d = json.load(f)
     items = (d.get("segments") or d.get("sentences") or []) if isinstance(d, dict) else d
     return [(float(s["start"]), float(s["end"]), s["text"].strip())
@@ -78,6 +79,12 @@ def pause_cuts(x, sr, lo_s, hi_s):
     return res
 
 
+def unix_stdout(stream=None):
+    """Print data with LF line ends on every OS: a script whose stdout vidx saves to a file (lang.txt,
+    ocr.jsonl) would write CRLF on Windows."""
+    (stream or sys.stdout).reconfigure(newline="\n")
+
+
 def dump_json(obj, path):
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
         json.dump(obj, f, ensure_ascii=False, indent=1)

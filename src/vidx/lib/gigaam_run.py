@@ -28,7 +28,7 @@ def main():
     x, sr = sf.read(src, dtype="float32")
     spans = [(0, len(x))]
     if len(sys.argv) > 3:
-        with open(sys.argv[3]) as f:
+        with open(sys.argv[3], encoding="utf-8") as f:
             spans = [(int(r["start"] * sr), min(len(x), int(r["end"] * sr))) for r in json.load(f) if r["lang"] == "ru"]
     chunks = []
     for s0, s1 in spans:
@@ -54,7 +54,7 @@ def main():
     print(file=sys.stderr)
     if spoken and failed == spoken:
         sys.exit(f"gigaam: all {failed} chunks failed")  # no empty result that would be cached as done
-    with open(out, "w") as f:
+    with open(out, "w", encoding="utf-8", newline="\n") as f:
         json.dump({"engine": "gigaam", "segments": res}, f, ensure_ascii=False, indent=0)
 
 

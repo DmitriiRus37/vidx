@@ -57,7 +57,7 @@ def args():
 def read_json(path, default=None):
     if not os.path.exists(path):
         return default
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -90,7 +90,7 @@ def load_ocr(out):
         return []
     t_of = {f["file"]: f["t"] for f in frames}
     rows = []
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         for line in f:
             r = json.loads(line)
             if r["text"].strip() and r["file"] in t_of:
@@ -101,7 +101,7 @@ def load_ocr(out):
 def load_glossary(path):
     rules = []
     if path:
-        with open(path) as f:
+        with open(path, encoding="utf-8-sig") as f:
             for line in f:
                 if "=>" in line and not line.lstrip().startswith("#"):
                     a, b = line.rstrip("\n").split("=>", 1)
@@ -265,7 +265,7 @@ def paragraphs(merged, chapters):
 def write_transcript(out, info, langs, regions, sources, ocr, merged, fallbacks, used):
     """transcript.md (escaped, with a header and chapters) and transcript.txt (plain text)."""
     paras = paragraphs(merged, info.get("chapters") or [])
-    with open(os.path.join(out, "transcript.md"), "w") as f:
+    with open(os.path.join(out, "transcript.md"), "w", encoding="utf-8", newline="\n") as f:
         f.write(f"# {md(info.get('title') or os.path.basename(out.rstrip('/')))}\n\n")
         if info.get("webpage_url"):
             f.write(f"Source: {md(info['webpage_url'])}  \n")
@@ -277,14 +277,14 @@ def write_transcript(out, info, langs, regions, sources, ocr, merged, fallbacks,
         f.write(f"; OCR on {len(ocr)} frames (ocr.md)\n\n" if ocr else "\n\n")
         f.writelines(f"## {hms(p[0])} · {md(p[2])}\n\n" if p[1] is None else f"**[{hms(p[0])}]** {md(p[1])}\n\n"
                      for p in paras)
-    with open(os.path.join(out, "transcript.txt"), "w") as f:
+    with open(os.path.join(out, "transcript.txt"), "w", encoding="utf-8", newline="\n") as f:
         f.write("".join(f"[{hms(s0)}] {t}\n" for s0, _, t, _ in merged))
 
 
 def write_aligned(out, sources, ocr, langs):
     """aligned.md: every source and the OCR side by side in WINDOW_S windows."""
     end = max([s[1] for v in sources.values() for s in v] + [r["t"] for r in ocr] + [0])
-    with open(os.path.join(out, "aligned.md"), "w") as f:
+    with open(os.path.join(out, "aligned.md"), "w", encoding="utf-8", newline="\n") as f:
         f.write(f"# Aligned sources ({WINDOW_S} s windows): {' '.join(sources)}\n")
         t = 0
         while t < end:
@@ -304,7 +304,7 @@ def write_aligned(out, sources, ocr, langs):
 def write_ocr(out, ocr):
     """ocr.md: the on-screen text of every frame, fenced as code (so it needs no escaping)."""
     if ocr:
-        with open(os.path.join(out, "ocr.md"), "w") as f:
+        with open(os.path.join(out, "ocr.md"), "w", encoding="utf-8", newline="\n") as f:
             f.write("# On-screen text (Apple Vision OCR)\n\n")
             for r in ocr:
                 q = fence(r["text"])

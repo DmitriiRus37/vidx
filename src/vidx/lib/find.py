@@ -23,9 +23,9 @@ def main():
                     print(f"{hms(s0)}  {name:<17} {text[:160]}")
     frames, ocr = os.path.join(out, "frames", "frames.json"), os.path.join(out, "ocr", "ocr.jsonl")
     if only in (None, "ocr") and os.path.exists(frames) and os.path.exists(ocr):
-        with open(frames) as f:
+        with open(frames, encoding="utf-8") as f:
             t_of = {x["file"]: x["t"] for x in json.load(f)}
-        with open(ocr) as f:
+        with open(ocr, encoding="utf-8") as f:
             rows = sorted((json.loads(line) for line in f), key=lambda r: t_of.get(r["file"], 0))
         for r in rows:
             for line in r["text"].splitlines():

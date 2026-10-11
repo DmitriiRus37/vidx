@@ -12,7 +12,7 @@ Porting the language ID to another backend changes nothing here: see lid.py.
 import collections
 import sys
 
-from common import is_silent, read_wav, top
+from common import is_silent, read_wav, top, unix_stdout
 
 CLIP_S, MIN_CLIPS, MAX_CLIPS, MIN_SHARE, MIN_VOTES = 10, 5, 30, 0.2, 2
 NO_SPEECH = "ru"
@@ -27,6 +27,7 @@ def vote(votes, n):
 def main():
     import lid
 
+    unix_stdout()
     model, src = sys.argv[1], sys.argv[2]
     detect = lid.load(model)
     sr, x = read_wav(src)

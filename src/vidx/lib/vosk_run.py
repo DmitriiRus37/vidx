@@ -28,5 +28,5 @@ with wave.open(src) as w:  # fed in 0.5 s pieces
         print(f"\r  vosk {100 * done // max(total, 1)}%", end="", file=sys.stderr, flush=True)
     take(rec.FinalResult())
 print(file=sys.stderr)
-with open(out, "w") as f:
+with open(out, "w", encoding="utf-8", newline="\n") as f:
     json.dump({"engine": "vosk", "segments": segs}, f, ensure_ascii=False, indent=1)

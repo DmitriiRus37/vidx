@@ -10,7 +10,7 @@ changing behaviour. README_RUS.md is a full Russian translation.
 uv run --isolated --group test pytest                            # unit tests (~1 min, no models, no network)
 uv run --isolated --group test --python 3.11 pytest              # oldest supported Python
 HF_HUB_OFFLINE=1 uv run --isolated --group test pytest -m real   # real models (macOS, after `vidx setup`)
-uvx ruff check lib/ tests/
+uvx ruff check src/ tests/
 /bin/bash -n vidx                                                # must parse under macOS bash 3.2
 VIDX_UPDATE_GOLDENS=1 uv run --isolated --group test pytest      # rewrite goldens after a deliberate change
 ```

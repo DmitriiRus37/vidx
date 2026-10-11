@@ -51,7 +51,7 @@ def main():
     raw_dir, log, out_dir = sys.argv[1:4]
     thr, roi, crop = float(sys.argv[4]), float(sys.argv[5]), sys.argv[6] == "1"
 
-    with open(log, errors="replace") as f:
+    with open(log, errors="replace", encoding="utf-8") as f:
         times = [float(m.group(1)) for line in f if " n:" in line and (m := re.search(r"pts_time:\s*([\d.]+)", line))]
     raw = sorted(f for f in os.listdir(raw_dir) if f.endswith(".jpg"))
     if len(times) != len(raw):

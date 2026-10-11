@@ -1,6 +1,6 @@
 """Fake engines for the vidx tests: same command lines and output files as the real ones, canned text.
 
-usage: engine.py <engine> <the real engine's arguments...>   (called from tests/fakes/hook.sh)
+usage: engine.py <engine> <the real engine's arguments...>   (run in place of each engine: tests/fakes/hook.py)
 Waits VIDX_FAKE_DELAY seconds (its pid is in VIDX_FAKE_LOG.pids/ meanwhile), fails (exit 1, no
 output) if the engine is in VIDX_FAKE_FAIL, logs the call to VIDX_FAKE_LOG. Output:
 VIDX_FAKE_DATA/<stem>.json if present, else one segment per clip (or for the whole audio) with the
@@ -32,7 +32,7 @@ def canned(stem, dst):
 
 
 def write(dst, obj):
-    with open(dst, "w") as f:
+    with open(dst, "w", encoding="utf-8", newline="\n") as f:
         json.dump(obj, f, ensure_ascii=False)
 
 
@@ -54,6 +54,7 @@ def whisper(engine, args):
 
 
 def main():
+    sys.stdout.reconfigure(newline="\n")  # ocr / detect_lang print data that vidx saves: LF on every OS
     engine, args = sys.argv[1], sys.argv[2:]
     if engine == "whisper" and "turbo" in arg(args, "--model", ""):
         engine = "turbo"
@@ -61,11 +62,12 @@ def main():
     query = args == ["--locales"]  # asked while queueing, not a job: no delay
     if os.environ.get("VIDX_FAKE_LOG") and not query:  # lets a test see which fakes are running now
         os.makedirs(os.environ["VIDX_FAKE_LOG"] + ".pids", exist_ok=True)
-        open(os.path.join(os.environ["VIDX_FAKE_LOG"] + ".pids", str(os.getpid())), "w").close()
+        pid_file = os.path.join(os.environ["VIDX_FAKE_LOG"] + ".pids", str(os.getpid()))
+        open(pid_file, "w", encoding="utf-8", newline="\n").close()
     time.sleep(0 if query else float(os.environ.get("VIDX_FAKE_DELAY", "0")))
     failed = engine in os.environ.get("VIDX_FAKE_FAIL", "").split(",")
     if os.environ.get("VIDX_FAKE_LOG"):
-        with open(os.environ["VIDX_FAKE_LOG"], "a") as f:
+        with open(os.environ["VIDX_FAKE_LOG"], "a", encoding="utf-8", newline="\n") as f:
             f.write(json.dumps({"engine": engine, "args": args, "start": t0, "end": time.time()}) + "\n")
     if failed:
         sys.exit(f"fake {engine}: failing as asked (VIDX_FAKE_FAIL)")
@@ -79,7 +81,7 @@ def main():
         if not canned("gigaam", args[1]):
             spans = [(0.0, duration(args[0]))]
             if len(args) > 2:
-                with open(args[2]) as f:
+                with open(args[2], encoding="utf-8") as f:
                     spans = [(r["start"], r["end"]) for r in json.load(f) if r["lang"] == "ru"]
             write(args[1], {"engine": "gigaam", "segments": segs(spans, "Fake gigaam ru.")})
     elif engine == "vosk":  # model audio out

@@ -1,10 +1,18 @@
-"""End-to-end runs of the bash vidx with fake engines: queue, stamps, resume, -j, failures."""
+"""End-to-end runs of vidx with fake engines: queue, stamps, resume, -j, failures."""
+import sys
+from pathlib import Path
+
 import pytest
 from helpers import MEDIA, fake_calls, needs_ffmpeg, run_vidx
+
+from vidx.engines import Registry
+from vidx.paths import platform_of
 
 pytestmark = needs_ffmpeg
 
 FIXTURE = MEDIA / "ru_slides.mp4"  # 4 s: Russian TTS + 2 slides
+DARWIN = {"VIDX_FAKE_PLATFORM": "darwin"}  # the Apple engine exists only there
+LID_MODEL = Registry(platform_of(), "/").lid.model  # the language-ID model of this platform
 RU_JOBS = ["whisper large-v3 [ru]", "Vosk [ru] (CPU)", "frames + OCR", "GigaAM-v3 [ru]",
            "parakeet-tdt-0.6b-v3 [any]", "whisper turbo [ru]"]  # apple: no ru
 
@@ -74,6 +82,7 @@ def test_auto_language(tmp_path):
     assert "gigaam" not in [c["engine"] for c in fake_calls(tmp_path)]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals; Windows: the Ctrl-Break test below")
 @pytest.mark.parametrize("jobs", [1, 2])
 def test_ctrl_c_stops_everything(tmp_path, jobs):
     """Ctrl-C in a terminal sends SIGINT to the whole foreground process group. vidx starts with SIGINT at its
@@ -84,9 +93,9 @@ def test_ctrl_c_stops_everything(tmp_path, jobs):
     import subprocess
     import time
 
-    from helpers import BASH, VIDX, vidx_env
+    from helpers import VIDX_CMD, vidx_env
 
-    p = subprocess.Popen([BASH, str(VIDX), str(FIXTURE), "-l", "ru", "-o", "out", "-j", str(jobs)], cwd=tmp_path,
+    p = subprocess.Popen([*VIDX_CMD, str(FIXTURE), "-l", "ru", "-o", "out", "-j", str(jobs)], cwd=tmp_path,
                          env=vidx_env(tmp_path, {"VIDX_FAKE_DELAY": "60"}), start_new_session=True,
                          stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
                          preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
@@ -101,6 +110,34 @@ def test_ctrl_c_stops_everything(tmp_path, jobs):
     for f in pids.iterdir():
         with pytest.raises(ProcessLookupError):
             os.kill(int(f.name), 0)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows console events")
+@pytest.mark.parametrize("jobs", [1, 2])
+def test_ctrl_break_stops_everything_on_windows(tmp_path, jobs):
+    """Windows twin of the Ctrl-C test: vidx in its own process group gets CTRL_BREAK_EVENT (a Ctrl-C cannot be
+    sent to a group), kills every engine tree and exits 130. Runs only on Windows (CI)."""
+    import os
+    import signal
+    import subprocess
+    import time
+
+    import psutil
+    from helpers import VIDX_CMD, vidx_env
+
+    p = subprocess.Popen([*VIDX_CMD, str(FIXTURE), "-l", "ru", "-o", "out", "-j", str(jobs)], cwd=tmp_path,
+                         env=vidx_env(tmp_path, {"VIDX_FAKE_DELAY": "60"}),
+                         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    pids = tmp_path / "fake.log.pids"
+    deadline = time.time() + 60
+    while not (pids.exists() and len(list(pids.iterdir())) >= jobs) and time.time() < deadline:
+        time.sleep(0.1)
+    assert pids.exists(), "no fake engine started"
+    os.kill(p.pid, signal.CTRL_BREAK_EVENT)
+    assert p.wait(timeout=10) == 130
+    time.sleep(0.5)
+    assert not [f.name for f in pids.iterdir() if psutil.pid_exists(int(f.name))]
 
 
 def test_parakeet_not_queued_outside_its_languages(tmp_path):
@@ -118,7 +155,7 @@ def test_parakeet_queued_for_its_languages(tmp_path):
 
 def test_apple_gets_explicit_locale_and_timeout(tmp_path):
     r = run_vidx(FIXTURE, "-l", "de", "-o", "out", "-e", "apple", tmp_path=tmp_path,
-                 env={"VIDX_FAKE_APPLE_LOCALES": "de-AT de-CH de-DE en-US", "VIDX_APPLE_TIMEOUT": "7"})
+                 env={**DARWIN, "VIDX_FAKE_APPLE_LOCALES": "de-AT de-CH de-DE en-US", "VIDX_APPLE_TIMEOUT": "7"})
     assert r.returncode == 0, r.stderr
     (call,) = [c for c in fake_calls(tmp_path) if c["engine"] == "apple"]
     assert call["args"][:3] == ["--timeout", "7", "de-DE"]
@@ -127,7 +164,7 @@ def test_apple_gets_explicit_locale_and_timeout(tmp_path):
 
 def test_apple_timeout_default(tmp_path):
     r = run_vidx(FIXTURE, "-l", "de", "-o", "out", "-e", "apple", tmp_path=tmp_path,
-                 env={"VIDX_FAKE_APPLE_LOCALES": "de-DE"})
+                 env={**DARWIN, "VIDX_FAKE_APPLE_LOCALES": "de-DE"})
     assert r.returncode == 0, r.stderr
     (call,) = [c for c in fake_calls(tmp_path) if c["engine"] == "apple"]
     assert call["args"][:2] == ["--timeout", "300"]
@@ -137,7 +174,7 @@ def test_apple_timeout_default(tmp_path):
 
 def test_apple_skipped_when_locale_not_supported(tmp_path):
     r = run_vidx(FIXTURE, "-l", "de", "-o", "out", "-e", "apple", tmp_path=tmp_path,
-                 env={"VIDX_FAKE_APPLE_LOCALES": "de-AT en-US"})  # de-AT is not de-DE
+                 env={**DARWIN, "VIDX_FAKE_APPLE_LOCALES": "de-AT en-US"})  # de-AT is not de-DE
     assert r.returncode == 0, r.stderr
     assert "Apple SpeechTranscriber: no de-DE, skipped" in r.stderr
     assert not [c for c in fake_calls(tmp_path) if c["engine"] == "apple"]
@@ -145,7 +182,7 @@ def test_apple_skipped_when_locale_not_supported(tmp_path):
 
 def test_apple_timeout_marks_engine_failed_and_continues(tmp_path):
     r = run_vidx(FIXTURE, "-l", "de", "-o", "out", "-e", "apple,whisper", tmp_path=tmp_path,
-                 env={"VIDX_FAKE_APPLE_LOCALES": "de-DE", "VIDX_FAKE_APPLE_EXIT": "4"})
+                 env={**DARWIN, "VIDX_FAKE_APPLE_LOCALES": "de-DE", "VIDX_FAKE_APPLE_EXIT": "4"})
     assert r.returncode == 3
     assert "model download for de-DE timed out" in r.stderr
     assert "failed jobs: Apple SpeechTranscriber [de]" in r.stderr
@@ -178,7 +215,7 @@ def test_vosk_model_from_the_table(tmp_path, lang, model):
     r = run_vidx(FIXTURE, "-l", lang, "-o", "out", "-e", "vosk", tmp_path=tmp_path)
     assert r.returncode == 0, r.stderr
     (call,) = [c for c in fake_calls(tmp_path) if c["engine"] == "vosk"]
-    assert call["args"][0].endswith("/models/" + model)
+    assert Path(call["args"][0]).parts[-2:] == ("models", model)
 
 
 def test_no_vosk_for_belarusian(tmp_path):
@@ -197,7 +234,7 @@ def test_mixed_regions_from_language_id_snapped_to_parakeet(tmp_path):
     r = run_vidx(FIXTURE, "-l", "ru,en", "-o", "out", "-e", "parakeet,whisper", tmp_path=tmp_path)
     assert r.returncode == 0, r.stderr
     args = regions_call(tmp_path)
-    assert args[0].endswith("whisper-large-v3-turbo") and args[1] == "ru,en"  # model first (lid_py)
+    assert args[0] == LID_MODEL and args[1] == "ru,en"  # model first (lid_py)
     assert args[-1].endswith("asr/parakeet.json")
     assert (tmp_path / "out" / "regions.json").exists()
 
@@ -218,7 +255,7 @@ def test_mixed_without_parakeet_engine_does_not_add_it(tmp_path):
 
 
 UK_EN_DE = {"VIDX_FAKE_DATA": str(MEDIA.parent / "fake" / "uk_en_de"),
-            "VIDX_FAKE_APPLE_LOCALES": "en-US de-DE fr-FR"}
+            "VIDX_FAKE_APPLE_LOCALES": "en-US de-DE fr-FR", **DARWIN}
 
 
 def test_three_languages_engines_per_region_language(tmp_path):
@@ -228,7 +265,7 @@ def test_three_languages_engines_per_region_language(tmp_path):
     clips = {c["args"][c["args"].index("--language") + 1]: c["args"][c["args"].index("--clip-timestamps") + 1]
              for c in calls if c["engine"] == "whisper"}
     assert clips == {"uk": "0.0,1.5", "en": "1.5,3.0", "de": "3.0,4.06"}
-    assert sorted(c["args"][0].rsplit("/", 1)[1] for c in calls if c["engine"] == "vosk") == [
+    assert sorted(Path(c["args"][0]).name for c in calls if c["engine"] == "vosk") == [
         "vosk-model-de-0.21", "vosk-model-en-us-0.22", "vosk-model-uk-v3"]
     assert sorted(c["args"][2] for c in calls if c["engine"] == "apple") == ["de-DE", "en-US"]  # no uk
     assert [c["engine"] for c in calls].count("parakeet") == 1  # all three are parakeet languages
@@ -280,7 +317,7 @@ def test_repeated_language_counts_once(tmp_path):
     r = run_vidx(FIXTURE, "-l", "ru,en,ru", "-o", "out", "-e", "whisper", "-j", "2", tmp_path=tmp_path)
     assert r.returncode == 0, r.stderr
     langs = [c["args"][c["args"].index("--language") + 1] for c in fake_calls(tmp_path) if c["engine"] == "whisper"]
-    assert langs == ["ru", "en"]  # one writer per output file, even with -j 2
+    assert sorted(langs) == ["en", "ru"]  # one writer per output file, even with -j 2 (finish order varies)
     assert "ru,en" in regions_call(tmp_path)
 
 
@@ -297,22 +334,19 @@ def test_language_id_backend_is_one_swap_point(tmp_path):
     r = run_vidx(FIXTURE, "-o", "out", "-e", "whisper", tmp_path=tmp_path, env={"VIDX_FAKE_LANG": "ru,en"})
     assert r.returncode == 0, r.stderr
     calls = {c["engine"]: c["args"] for c in fake_calls(tmp_path) if c["engine"] in ("detect_lang", "regions")}
-    assert calls["detect_lang"][0] == calls["regions"][0] == "mlx-community/whisper-large-v3-turbo"
+    assert calls["detect_lang"][0] == calls["regions"][0] == LID_MODEL
     assert calls["detect_lang"][1].endswith("audio.wav")
 
 
-def test_fake_hook_defaults_to_python3_on_path(tmp_path):
-    """Without VIDX_TEST_PYTHON the hook uses the python3 found on PATH (as its comment says)."""
-    import os
+def test_fake_hook_defaults_to_the_python_running_vidx(tmp_path):
+    """Without VIDX_TEST_PYTHON the hook uses the Python that runs vidx (as its docstring says)."""
     import subprocess
-    import sys
 
-    from helpers import BASH, VIDX, vidx_env
+    from helpers import VIDX_CMD, vidx_env
 
     env = vidx_env(tmp_path)
     del env["VIDX_TEST_PYTHON"]
-    env["PATH"] = os.path.dirname(sys.executable) + os.pathsep + env["PATH"]
-    r = subprocess.run([BASH, str(VIDX), str(FIXTURE), "-l", "ru", "-o", "out", "-e", "whisper", "--no-frames"],
+    r = subprocess.run([*VIDX_CMD, str(FIXTURE), "-l", "ru", "-o", "out", "-e", "whisper", "--no-frames"],
                        cwd=tmp_path, env=env, capture_output=True, text=True, timeout=120)
     assert r.returncode == 0, r.stderr
 

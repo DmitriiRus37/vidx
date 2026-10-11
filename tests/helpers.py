@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-LIB = ROOT / "lib"
+LIB = ROOT / "src" / "vidx" / "lib"
 FIXTURES = ROOT / "tests" / "fixtures"
 GOLDEN = ROOT / "tests" / "golden"
 UPDATE_GOLDENS = os.environ.get("VIDX_UPDATE_GOLDENS") == "1"  # rewrite goldens instead of comparing
@@ -37,9 +37,9 @@ def check_golden(case, out, files=("transcript.txt", "transcript.md")):
         assert got == want.read_text(), f"{case}/{name} differs from the golden file"
 
 
-VIDX = ROOT / "vidx"
+VIDX = ROOT / "vidx"  # the POSIX launcher of a checkout
+VIDX_CMD = [sys.executable, "-m", "vidx"]  # the package (installed into the test environment by uv)
 MEDIA = FIXTURES / "media"
-BASH = "/bin/bash"  # macOS ships bash 3.2 there: the script must keep working with it
 # vidx runs ffmpeg/ffprobe itself even with the fake engines (audio, frames)
 needs_ffmpeg = pytest.mark.skipif(not (shutil.which("ffmpeg") and shutil.which("ffprobe")),
                                   reason="the CLI tests run vidx, which needs ffmpeg and ffprobe on PATH")
@@ -55,11 +55,11 @@ def vidx_env(tmp_path, env=None):
 
 
 def run_vidx(*args, tmp_path, env=None, timeout=120):
-    """Run the bash vidx with the fake engines (tests/fakes/); every fake call is logged to
-    tmp_path/fake.log (one JSON line per call)."""
+    """Run vidx with the fake engines (tests/fakes/); every fake call is logged to tmp_path/fake.log (one JSON
+    line per call)."""
     e = vidx_env(tmp_path, env)
-    return subprocess.run([BASH, str(VIDX), *map(str, args)], cwd=tmp_path, env=e, capture_output=True,
-                          text=True, timeout=timeout)
+    return subprocess.run([*VIDX_CMD, *map(str, args)], cwd=tmp_path, env=e, capture_output=True, text=True,
+                          encoding="utf-8", timeout=timeout)
 
 
 def fake_calls(tmp_path, queries=False):
