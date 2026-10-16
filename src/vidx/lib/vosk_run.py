@@ -3,8 +3,10 @@ import json
 import sys
 import wave
 
+from common import unix_stderr
 from vosk import KaldiRecognizer, Model, SetLogLevel
 
+unix_stderr()
 SetLogLevel(-1)
 model_dir, src, out = sys.argv[1:4]
 segs = []

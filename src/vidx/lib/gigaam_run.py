@@ -13,7 +13,7 @@ import sys
 import tempfile
 
 import numpy as np
-from common import pause_cuts
+from common import pause_cuts, unix_stderr
 
 CHUNK_MIN_S, CHUNK_MAX_S = 14, 22  # GigaAM refuses audio longer than 25 s
 
@@ -70,4 +70,5 @@ def main():
 
 
 if __name__ == "__main__":
+    unix_stderr()
     main()

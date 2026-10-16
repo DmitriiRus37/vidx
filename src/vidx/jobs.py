@@ -6,7 +6,9 @@ Ctrl-C then reaches only vidx, which kills every running tree (kill_tree: psutil
 descendants, plus killpg on POSIX, or taskkill on Windows when psutil is missing) and exits 130. The main
 thread waits for programs in POLL_S slices (wait, communicate): Windows runs the handler only between them.
 """
+import codecs
 import contextlib
+import locale
 import os
 import re
 import signal
@@ -57,14 +59,37 @@ def child_env(extra=None):
     return env
 
 
+class Text(str):
+    """An argument that is text, not a file name: the whisper prompt, the find regex, a URL. See os_arg."""
+    __slots__ = ()
+
+
+def os_arg(a, platform=None):
+    """An argument as the program gets it. POSIX passes bytes, and Python encodes a str in the locale's encoding, while
+    vidx's Python children (PYTHONUTF8=1, or -X utf8) and yt-dlp read their argv as UTF-8. So in a non-UTF-8 locale
+    (Latin-1 on Linux) text would arrive wrong: a Cyrillic glossary word cannot be encoded at all, and the é of café
+    becomes a byte the child cannot decode. Text therefore always goes as UTF-8, and so does any argument the locale
+    cannot encode; a path the locale can encode (every file name the OS gave vidx) keeps the locale's bytes, as before.
+    macOS encodes argv in UTF-8 whatever the locale, and Windows passes Unicode."""
+    if isinstance(a, Text):
+        return str(a) if (platform or paths.platform_of()) == "win32" else a.encode("utf-8", "surrogateescape")
+    a = str(a)
+    try:
+        os.fsencode(a)
+        return a
+    except UnicodeEncodeError:
+        return a.encode("utf-8", "surrogateescape")
+
+
 def spawn(argv, platform=None, stdout=None, stderr=None, env=None):
     """Start a program in its own process group, registered for kill_all()."""
+    platform = platform or paths.platform_of()
     kw = dict(stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr, env=child_env(env))
-    if (platform or paths.platform_of()) == "win32":
+    if platform == "win32":
         kw["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200)
     else:
         kw["start_new_session"] = True
-    p = subprocess.Popen([str(a) for a in argv], **kw)
+    p = subprocess.Popen([os_arg(a, platform) for a in argv], **kw)
     with _live_lock:
         _live.add(p)
     return p
@@ -88,12 +113,44 @@ def communicate(p):
             continue
 
 
-def _copy_lines(stream, drop, dest):
-    for raw in stream:
-        line = raw.decode("utf-8", "replace")
-        if drop not in line:
-            dest.write(line)
-            dest.flush()
+def reencodes(stream):
+    """Whether a program's stderr must go through vidx to reach this stream: a terminal that is not UTF-8 (a Latin-1
+    locale on Linux or macOS), where the UTF-8 that vidx's Python children write would show garbled. Anywhere else
+    (a file, a pipe, a UTF-8 terminal, the Windows console) the program writes to vidx's stderr itself and still sees
+    a terminal where there is one (colours, progress bars)."""
+    try:
+        return stream.isatty() and codecs.lookup(stream.encoding).name != "utf-8"
+    except (AttributeError, LookupError, OSError, TypeError, ValueError):
+        return False
+
+
+def as_text(piece, fallback):
+    """Program output → text: UTF-8 (vidx's Python children, the Swift helpers), else, for a non-Python program
+    in a non-UTF-8 locale (ffmpeg naming a Latin-1 file), the locale's encoding."""
+    try:
+        return piece.decode("utf-8")
+    except UnicodeDecodeError:
+        return piece.decode(fallback, "replace")
+
+
+def relay(stream, dest, drop=None, fallback=None):
+    """Copy a program's stderr to the text stream dest as it comes, piece by piece: a piece ends at \\n or \\r, so a
+    progress line shows while it is drawn, and a piece containing drop is left out. dest writes the text in its own
+    encoding: a terminal's with "?" for what it lacks (log.setup_streams), a log file UTF-8."""
+    fallback = fallback or locale.getpreferredencoding(False)
+    rest = b""
+    while chunk := stream.read1(1 << 16):
+        *pieces, rest = re.split(rb"(?<=[\r\n])", rest + chunk)
+        for piece in pieces:
+            _show(as_text(piece, fallback), dest, drop)
+    if rest:
+        _show(as_text(rest, fallback), dest, drop)
+
+
+def _show(text, dest, drop):
+    if text and not (drop and drop in text):
+        dest.write(text)
+        dest.flush()
 
 
 def _forget(p):
@@ -177,17 +234,18 @@ class Context:
 
     def call(self, argv, stdout=None, drop=None, env=None):
         """Run a program, wait, return its exit status. stdout: a file path to write its output to (else the
-        job's output); drop: stderr lines containing this text are not shown (Hugging Face "Fetching")."""
+        job's output); drop: stderr lines containing this text are not shown (Hugging Face "Fetching"). Its stderr
+        goes through vidx when filtered, or re-encoded for a non-UTF-8 terminal (reencodes)."""
         if _interrupted.is_set():
             return 130
         out_file = open(stdout, "wb") if stdout else None  # noqa: SIM115 — closed below
         try:
             target = self.stream
-            err = subprocess.PIPE if drop else (target or None)
-            p = spawn(argv, stdout=out_file or target, stderr=err, env=env)
+            through = drop is not None or (target is None and reencodes(sys.stderr))
+            p = spawn(argv, stdout=out_file or target, stderr=subprocess.PIPE if through else target, env=env)
             pump = None
-            if drop:  # filtered in a thread: the main thread must stay in wait()'s slices
-                pump = threading.Thread(target=_copy_lines, args=(p.stderr, drop, target or sys.stderr), daemon=True)
+            if through:  # copied in a thread: the main thread must stay in wait()'s slices
+                pump = threading.Thread(target=relay, args=(p.stderr, target or sys.stderr, drop), daemon=True)
                 pump.start()
             rc = wait(p)
             while pump and pump.is_alive():  # the rest of the program's stderr

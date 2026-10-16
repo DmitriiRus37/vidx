@@ -32,7 +32,7 @@ def test_slide_title_read_in_its_language(ocr, tmp_path, lang):
     png = tmp_path / f"{lang}.png"
     im.save(png)
     want = languages.ocr_arg([lang])
-    out = subprocess.run([ocr, want, png], capture_output=True, text=True, check=True).stdout
+    out = subprocess.run([ocr, want, png], capture_output=True, text=True, encoding="utf-8", check=True).stdout
     text = json.loads(out)["text"].replace(" ", "")
     assert TITLES[lang].replace(" ", "") in text, f"{want}: {text}"
 
@@ -56,13 +56,14 @@ def test_mixed_script_slide_reads_every_line_once(ocr, tmp_path, codes, lines):
     line exactly once, from the model of its own script."""
     png = tmp_path / "s.png"
     slide(png, lines)
-    out = subprocess.run([ocr, languages.ocr_arg(codes), png], capture_output=True, text=True, check=True).stdout
+    out = subprocess.run([ocr, languages.ocr_arg(codes), png], capture_output=True, text=True, encoding="utf-8",
+                         check=True).stdout
     assert json.loads(out)["text"].splitlines() == lines
 
 
 def test_unreadable_image_is_reported(ocr, tmp_path):
     bad = tmp_path / "bad.jpg"
     bad.write_text("not an image", encoding="utf-8", newline="\n")
-    r = subprocess.run([ocr, "en-US", bad], capture_output=True, text=True, check=True)
+    r = subprocess.run([ocr, "en-US", bad], capture_output=True, text=True, encoding="utf-8", check=True)
     assert json.loads(r.stdout) == {"file": "bad.jpg", "text": ""}
     assert "bad.jpg" in r.stderr

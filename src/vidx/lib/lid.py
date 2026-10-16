@@ -20,6 +20,8 @@ real tests get the backend from the registry (tests/conftest.py, lid_backend).
 import importlib.util
 import sys
 
+from common import unix_stderr
+
 
 def load(model):
     """→ detect(clip) function for the given whisper model, on the backend this interpreter has."""
@@ -59,4 +61,5 @@ def load_mlx(model):
 
 
 if __name__ == "__main__":
+    unix_stderr()
     load(sys.argv[1])

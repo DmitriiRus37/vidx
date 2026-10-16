@@ -120,3 +120,14 @@ def test_whisper_model_override_in_a_run(tmp_path):
     assert r.returncode == 0, r.stderr
     (call,) = [c for c in fake_calls(tmp_path) if c["engine"] == "whisper"]
     assert call["args"][1:3] == ["--model", "tiny"]
+
+
+def test_engine_arguments_keep_text_marked():
+    """Engine.argv turns numbers and paths into str, but a jobs.Text (the whisper prompt) must stay Text, or a
+    non-UTF-8 locale would encode it as a path."""
+    from vidx import jobs
+    from vidx.engines import Engine
+
+    argv = Engine("whisper", "m", ["prog"]).argv("a.wav", 3, "--initial-prompt", jobs.Text("café"))
+    assert argv == ["prog", "a.wav", "3", "--initial-prompt", "café"] and type(argv[4]) is jobs.Text
+    assert all(type(a) is str for a in argv[:4])

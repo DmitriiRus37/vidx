@@ -39,7 +39,12 @@ jobs:
           uv tool install -e .
           uv tool dir --bin >> "$GITHUB_PATH"
       - name: vidx setup
-        run: vidx setup --no-models
+        shell: bash
+        run: |
+          vidx setup --no-models | tee setup.out
+          # every device probe must name a device: "unknown (...)" is a broken venv or probe script
+          grep "^devices: " setup.out
+          if grep -q "^devices: .*: unknown" setup.out; then exit 1; fi
       - name: backend tests with real models
         run: uv run --isolated --group test pytest -m real tests/test_real_engines.py -ra
       - name: a whole run (ru + en)

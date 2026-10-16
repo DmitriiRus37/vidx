@@ -433,9 +433,15 @@ sh -n vidx                                                  # the POSIX launcher
 - **Fixtures**: short TTS clips, rendered slides and engine outputs in `tests/fixtures/` (under 400 KB
   each).
 - **CI** ([.github/workflows](.github/workflows)): `ci.yml` runs ruff and the test suite on macOS, Linux
-  and Windows with Python 3.11 and 3.14; `smoke.yml` (nightly, manual) runs `vidx setup` and the real
+  and Windows with Python 3.11 and 3.14, and the suite once more on Linux in a Latin-1 locale with UTF-8
+  mode off (`latin-1`); `smoke.yml` (nightly, manual) runs `vidx setup` and the real
   engines with small models on Linux and Windows.
-- Text files are UTF-8 with LF on every OS: every `open()` names its encoding and newline (a test checks).
+- Text files are UTF-8 with LF on every OS: every `open()` names its encoding and newline, and every program
+  output read as text its encoding (a test checks).
+  So is vidx's output redirected to a file or pipe, whatever the locale, and so are the scripts' messages in a
+  `-j` log; a terminal keeps its own encoding and shows a character it has no code for as `?`, the engines'
+  messages included. Text arguments (the glossary prompt, a `vidx find` regex, a URL) reach the programs as
+  UTF-8 in any locale; file names are passed as the OS gave them.
 - Plans and the porting analysis: [docs/plans/](docs/plans/).
 
 ## Files
@@ -461,6 +467,7 @@ src/vidx/lib/            scripts run by the engines' interpreters:
   ocr.swift, ocr_rapid.py  OCR: Apple Vision / RapidOCR, one pass per script
   merge.py               aligned.md, transcript.md/.txt, ocr.md
   find.py                phrase → timecode
+  device.py, gigaam_warm.py  vidx setup: device report, GigaAM model download
   common.py              helpers shared by the scripts
 glossaries/example.txt   glossary format
 tests/                   pytest suite, fake engines, fixtures, goldens

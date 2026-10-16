@@ -56,7 +56,7 @@ def test_language_id_tells_english_from_russian(tmp_path):
             "d = lid.load(sys.argv[2]); a = d(x[0:sr * 8]); b = d(x[sr * 21:sr * 28]);"
             "print(max(a, key=a.get), max(b, key=b.get))")
     r = subprocess.run([prog[0], "-I", "-c", code, str(LIB), WHISPER_MODEL, wav("ru_en.m4a", tmp_path)],
-                       capture_output=True, text=True, check=True)
+                       capture_output=True, text=True, encoding="utf-8", check=True)
     assert r.stdout.split() == ["ru", "en"]
 
 

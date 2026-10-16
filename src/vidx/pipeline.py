@@ -6,11 +6,13 @@ registry (vidx.engines), so the same code runs on macOS, Linux and Windows.
 """
 import glob
 import importlib.util
+import io
 import json
 import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import urllib.request
 import zipfile
@@ -118,10 +120,15 @@ def remove_sources(out):
 
 
 def capture(argv, quiet=False):
-    """Run a program (registered for Ctrl-C), return (exit status, stdout text); quiet: no stderr."""
-    p = jobs.spawn(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL if quiet else None)
-    out, _ = jobs.communicate(p)
+    """Run a program (registered for Ctrl-C), return (exit status, stdout text); quiet: no stderr. A non-UTF-8
+    terminal gets the program's stderr re-encoded, after it ends (jobs.reencodes)."""
+    through = not quiet and jobs.reencodes(sys.stderr)
+    p = jobs.spawn(argv, stdout=subprocess.PIPE,
+                   stderr=subprocess.DEVNULL if quiet else subprocess.PIPE if through else None)
+    out, err = jobs.communicate(p)
     jobs._forget(p)
+    if err:
+        jobs.relay(io.BytesIO(err), sys.stderr)
     return p.returncode, out.decode("utf-8", "replace")
 
 
@@ -213,7 +220,7 @@ class Run:
         ytdlp = [self.need("yt-dlp"), "--ignore-config", "--no-warnings", "--no-playlist"]
         out = o.out
         if not out:
-            rc, text = capture([*ytdlp, "--skip-download", "--print", "%(id)s", o.input])
+            rc, text = capture([*ytdlp, "--skip-download", "--print", "%(id)s", jobs.Text(o.input)])
             vid = re.sub(r"[^A-Za-z0-9_-]", "_", (text.splitlines() or [""])[0]) if rc == 0 else ""
             if not vid:
                 raise Fatal(f"could not read the video id of {o.input}")
@@ -231,7 +238,7 @@ class Run:
                       "--merge-output-format", "mp4", "-o", f"{out_t}{sep}source.%(ext)s",
                       "--write-info-json", "--write-description", "--write-thumbnail", "--convert-thumbnails", "jpg",
                       "-o", f"infojson:{out_t}{sep}info", "-o", f"description:{out_t}{sep}description",
-                      "-o", f"thumbnail:{out_t}{sep}thumbnail", o.input])
+                      "-o", f"thumbnail:{out_t}{sep}thumbnail", jobs.Text(o.input)])
             # yt-dlp appends its own extensions: info.info.json, description.description
             for a, b in (("info.info.json", "info.json"), ("description.description", "description.txt")):
                 if os.path.isfile(self.out.join(a)):
@@ -254,8 +261,8 @@ class Run:
                     if lang != "auto" and f",{lang}," not in f",{sl},":
                         sl = f"{sl},{lang},{lang}-orig" if sl else f"{lang},{lang}-orig"
             for kind, flag in (("manual", "--write-subs"), ("auto", "--write-auto-subs")):
-                if run([*ytdlp, "-q", "--skip-download", flag, "--sub-langs", sl, "--sub-format", "json3",
-                        "-o", f"subtitle:{out_t}{os.sep}subs{os.sep}{kind}", o.input]) != 0:
+                if run([*ytdlp, "-q", "--skip-download", flag, "--sub-langs", jobs.Text(sl), "--sub-format", "json3",
+                        "-o", f"subtitle:{out_t}{os.sep}subs{os.sep}{kind}", jobs.Text(o.input)]) != 0:
                     warn(f"{kind} subtitles failed")
 
     def audio_and_language(self):
@@ -334,7 +341,7 @@ class Run:
         args = ["--model", engine.model, "-o", self.out.join("asr"), "--output-name", stem, "-f", "json",
                 "--verbose", "False", "--condition-on-previous-text", "False", "--language", lang]
         if self.prompt:
-            args += ["--initial-prompt", self.prompt]
+            args += ["--initial-prompt", jobs.Text(self.prompt)]  # text: UTF-8 in every locale
         if clips:
             args += ["--clip-timestamps", clips]
         return self.engine_job(engine, self.audio, *args)

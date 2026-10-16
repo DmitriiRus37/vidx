@@ -1,9 +1,13 @@
 """vidx setup per OS (vidx.setup): tool checks with install commands, uv environments, models, devices.
 The plan is computed for a simulated platform; --dry-run prints it."""
-from pathlib import PureWindowsPath
+import os
+import subprocess
+import sys
+import types
+from pathlib import Path, PureWindowsPath
 
 import pytest
-from helpers import run_vidx
+from helpers import LIB, run_vidx
 
 from vidx import setup
 
@@ -127,3 +131,52 @@ def test_dry_run_on_macos_names_apple_gpu(tmp_path):
     r = run_vidx("setup", "--dry-run", tmp_path=tmp_path, env={"VIDX_FAKE_PLATFORM": "darwin"})
     assert r.returncode == 0, r.stderr
     assert "GPU: Apple (MLX engines; GigaAM on MPS)" in r.stdout and "NVIDIA" not in r.stdout
+
+
+def test_device_report_reads_the_probes_as_utf8(tmp_path, capsys):
+    """A probe's output (a GPU name, the last line of an error) is read as UTF-8, which the probe must then print
+    whatever the locale: Windows' code page or a Latin-1 locale would give its own bytes or stop it."""
+
+    ok, broken = tmp_path / "ok.py", tmp_path / "broken.py"
+    ok.write_text("print('caf\\xe9 \\u2192 \\u0412\\u0438\\u0434\\u0435\\u043e')\n", encoding="utf-8", newline="\n")
+    broken.write_text("import sys\nsys.exit('\\u043d\\u0435\\u0442 CUDA: caf\\xe9')\n", encoding="utf-8", newline="\n")
+    probes = [("ok", setup.isolated(sys.executable, ok)), ("broken", setup.isolated(sys.executable, broken))]
+    setup.report_devices(types.SimpleNamespace(device_probes=lambda: probes, gpus=["x"], platform="linux"))
+    assert capsys.readouterr().out == "devices: ok: café → Видео\ndevices: broken: unknown (нет CUDA: café)\n"
+
+
+def test_a_probe_that_times_out_is_reported_and_the_rest_still_run(tmp_path, monkeypatch, capsys):
+    """A probe stuck past its timeout (a driver that hangs, a first import that compiles for minutes) must not stop
+    vidx setup with a TimeoutExpired: its device is reported as unknown and the next probe runs."""
+
+    slow = tmp_path / "slow_probe.py"
+    slow.write_text("import time\ntime.sleep(30)\n", encoding="utf-8", newline="\n")
+    fast = tmp_path / "fast_probe.py"
+    fast.write_text("print('cpu')\n", encoding="utf-8", newline="\n")
+    monkeypatch.setattr(setup, "PROBE_TIMEOUT_S", 1)
+    probes = [("slow", [sys.executable, "-I", str(slow)]), ("fast", [sys.executable, "-I", str(fast)])]
+    setup.report_devices(types.SimpleNamespace(device_probes=lambda: probes, gpus=["x"], platform="linux"))
+    assert capsys.readouterr().out == "devices: slow: unknown (timed out after 1 s)\ndevices: fast: cpu\n"
+
+
+@pytest.mark.parametrize("platform", ["darwin", "linux", "win32"])
+def test_probes_and_warm_steps_run_lib_scripts_by_path(platform):
+    """CLAUDE.md: no `python -c <code>` in the orchestrator. The device probes and the GigaAM warm-up are lib scripts
+    run by path, isolated (-I) and in UTF-8 mode (-X utf8: -I ignores the PYTHONUTF8=1 of vidx's children)."""
+    p = plan(platform)
+    runs = [list(map(str, argv)) for _, argv in p.device_probes()] + [list(map(str, s.argv)) for s in p.steps]
+    assert not [argv for argv in runs if "-c" in argv]
+    lib_runs = [argv for argv in runs if "-I" in argv]
+    for argv in lib_runs:
+        assert argv[1:4] == ["-I", "-X", "utf8"] and Path(argv[4]).parent == LIB, argv
+        assert Path(argv[4]).is_file(), argv
+    scripts = sorted(Path(argv[4]).name for argv in lib_runs)
+    assert scripts == ["device.py"] * len(p.device_probes()) + ["gigaam_warm.py"]
+
+
+def test_device_script_names_a_device_from_any_directory(tmp_path):
+    """lib/device.py run as setup runs it (-I: neither the cwd nor its own directory on sys.path) imports its
+    siblings itself. VIDX_WHISPER_DEVICE stands in for CTranslate2, which the test environment does not have."""
+    r = subprocess.run(setup.isolated(sys.executable, LIB / "device.py", "whisper"), cwd=tmp_path, capture_output=True,
+                       text=True, encoding="utf-8", env={**os.environ, "VIDX_WHISPER_DEVICE": "cpu"}, timeout=60)
+    assert (r.returncode, r.stdout) == (0, "cpu int8\n"), r.stderr

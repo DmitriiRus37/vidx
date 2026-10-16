@@ -1,4 +1,5 @@
 """The job queue (vidx.jobs): order, -j limit, caching, failures, logs, process trees, Windows branches."""
+import io
 import os
 import subprocess
 import sys
@@ -7,7 +8,7 @@ import types
 
 import pytest
 
-from vidx import jobs
+from vidx import jobs, log
 from vidx.state import OutDir
 
 PY = [sys.executable, "-I", "-c"]
@@ -173,6 +174,33 @@ def test_spawn_flags_per_platform(monkeypatch):
     assert seen["stdin"] == subprocess.DEVNULL and seen["env"]["PYTHONUTF8"] == "1"
 
 
+
+def test_arguments_a_non_utf8_locale_cannot_encode_go_as_utf8(monkeypatch):
+    """Linux in a Latin-1 locale: Python encodes argv in the locale's encoding, so a Cyrillic glossary word for an
+    engine stopped vidx. It goes as UTF-8, in which vidx's Python children (PYTHONUTF8=1) read their argv; what the
+    locale can encode (every path the OS gave vidx) is passed as Python would pass it."""
+    seen = []
+    monkeypatch.setattr(subprocess, "Popen", lambda argv, **kw: seen.append(argv) or FakeProc(1, []))
+    monkeypatch.setattr(jobs, "_live", set())
+    monkeypatch.setattr(os, "fsencode", lambda s: s.encode("latin-1", "surrogateescape"))
+    jobs.spawn(["whisper", "café.wav", "--initial-prompt", "Деплой"], platform="linux")
+    assert seen == [["whisper", "café.wav", "--initial-prompt", "Деплой".encode()]]
+
+
+def test_text_arguments_go_as_utf8_whatever_the_locale_can_encode(monkeypatch):
+    """A glossary word Latin-1 *can* encode (café) went as the Latin-1 byte for é, which a child in UTF-8 mode reads
+    as an undecodable byte, not as é. Text (a prompt, a regex, a URL) goes as UTF-8 on POSIX, a path as the locale's
+    bytes as before (the file name the OS gave vidx), and Windows passes Unicode either way."""
+    seen = []
+    monkeypatch.setattr(subprocess, "Popen", lambda argv, **kw: seen.append(argv) or FakeProc(1, []))
+    monkeypatch.setattr(jobs, "_live", set())
+    monkeypatch.setattr(os, "fsencode", lambda s: s.encode("latin-1", "surrogateescape"))
+    for platform in ("linux", "darwin", "win32"):
+        jobs.spawn(["whisper", "café.wav", "--initial-prompt", jobs.Text("café")], platform=platform)
+    assert seen == [["whisper", "café.wav", "--initial-prompt", "café".encode()]] * 2 + [
+        ["whisper", "café.wav", "--initial-prompt", "café"]]
+    assert type(seen[2][3]) is str
+
 class FakeProc:
     def __init__(self, pid, log, survives=False):
         self.pid, self.log, self.survives = pid, log, survives
@@ -262,9 +290,9 @@ def test_dropped_stderr_is_read_off_the_main_thread(monkeypatch):
     readers = []
 
     class Lines(io.BytesIO):
-        def __iter__(self):
+        def read1(self, size=-1):
             readers.append(threading.current_thread() is threading.main_thread())
-            return super().__iter__()
+            return super().read1(size)
 
     class Proc:
         pid, stderr = 1, Lines(b"Fetching 4 files\nreal warning\n")
@@ -276,4 +304,112 @@ def test_dropped_stderr_is_read_off_the_main_thread(monkeypatch):
     monkeypatch.setattr(jobs, "spawn", lambda argv, **kw: Proc())
     shown = io.StringIO()
     assert jobs.Context(shown).call(["x"], drop="Fetching") == 0
-    assert readers == [False] and shown.getvalue() == "real warning\n"
+    assert readers and not any(readers) and shown.getvalue() == "real warning\n"
+
+
+# --- engine stderr on a terminal ------------------------------------------------------------------------------
+class Terminal(io.TextIOWrapper):
+    """A stand-in terminal: its own encoding, set up by log.setup_streams as vidx sets up its stderr."""
+
+    def __init__(self, encoding):
+        super().__init__(io.BytesIO(), encoding=encoding, newline="\n")
+        log.setup_streams([self])
+
+    def isatty(self):
+        return True
+
+    def shown(self):
+        self.flush()
+        return self.buffer.getvalue()
+
+
+# LF on Windows too, as a lib script's redirected stderr (common.unix_stderr); the relay passes line ends on as they are
+CHILD = [sys.executable, "-I", "-X", "utf8", "-c",
+         "import sys; sys.stderr.reconfigure(newline='\\n'); sys.stderr.write('caf\\xe9 \\u2192 ok\\n')"]
+
+
+def test_engine_stderr_is_reencoded_for_a_non_utf8_terminal(monkeypatch):
+    """vidx's Python children write UTF-8, which a Latin-1 terminal shows as two wrong letters per é. With -j 1 their
+    stderr now goes through vidx, which writes it in the terminal's encoding, "?" for what it has no code for."""
+    tty = Terminal("latin-1")
+    monkeypatch.setattr(sys, "stderr", tty)
+    assert jobs.Context().call(CHILD) == 0
+    assert tty.shown() == "café ? ok\n".encode("latin-1")
+
+
+def test_captured_programs_stderr_is_reencoded_too(monkeypatch):
+    from vidx import pipeline
+
+    tty = Terminal("latin-1")
+    monkeypatch.setattr(sys, "stderr", tty)
+    assert pipeline.capture(CHILD) == (0, "")
+    assert tty.shown() == "café ? ok\n".encode("latin-1")
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", None])
+def test_a_utf8_terminal_or_a_file_gets_the_programs_stderr_directly(monkeypatch, encoding):
+    """Only a non-UTF-8 terminal needs the relay: elsewhere the program keeps writing to vidx's stderr itself, so
+    it still sees a terminal (colours, progress bars) and nothing changes."""
+    seen = {}
+    monkeypatch.setattr(sys, "stderr", Terminal(encoding) if encoding else io.StringIO())
+    class Done:
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(jobs, "spawn", lambda argv, **kw: seen.update(kw) or Done())
+    assert jobs.Context().call(["x"]) == 0
+    assert seen["stderr"] is None
+
+
+def test_relay_passes_progress_lines_as_they_come_and_reads_non_utf8_as_the_locale():
+    """A piece ends at \\r or \\n, so "\\r  whisper 2/9 s" is shown while the engine runs, not when it ends; a piece
+    that is not UTF-8 (ffmpeg naming a Latin-1 file) is read in the locale's encoding."""
+    class Chunks:
+        def __init__(self, *chunks):
+            self.chunks = list(chunks)
+
+        def read1(self, size=-1):
+            return self.chunks.pop(0) if self.chunks else b""
+
+    class Dest:
+        writes = []
+
+        def write(self, text):
+            self.writes.append(text)
+
+        def flush(self):
+            pass
+
+    jobs.relay(Chunks(b"\r  whisper 1/9", b" s\r  whisper 2/9 s", b"\n", b"caf\xe9.wav: Fetching\n", "Größe".encode()),
+               Dest(), drop="Fetching", fallback="latin-1")
+    assert Dest.writes == ["\r", "  whisper 1/9 s\r", "  whisper 2/9 s\n", "Größe"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a pseudo-terminal (POSIX)")
+def test_engine_stderr_on_a_real_latin1_terminal(tmp_path):
+    """The same through a real pseudo-terminal in a real Latin-1 locale (macOS; ci latin-1 on Linux)."""
+    import pty
+
+    from test_text_io import latin1_env
+
+    if not latin1_env():
+        pytest.skip("needs a Latin-1 locale")
+    driver = tmp_path / "driver.py"
+    driver.write_text("import sys\nfrom vidx import jobs, log\nlog.setup_streams()\n"
+                      f"sys.exit(jobs.Context().call({CHILD!r}))\n", encoding="utf-8", newline="\n")
+    master, slave = pty.openpty()
+    p = subprocess.Popen([sys.executable, str(driver)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=slave, env=latin1_env())
+    os.close(slave)
+    shown = b""
+    while True:
+        try:
+            data = os.read(master, 4096)
+        except OSError:  # Linux: EIO once the driver has exited
+            break
+        if not data:
+            break
+        shown += data
+    os.close(master)
+    assert p.wait(timeout=30) == 0
+    assert b"caf\xe9 ? ok" in shown, shown

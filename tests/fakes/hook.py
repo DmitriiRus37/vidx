@@ -22,8 +22,8 @@ def apply(rt):
 
     py = rt.env.get("VIDX_TEST_PYTHON") or sys.executable
 
-    def fake(name):
-        return [py, "-I", ENGINE, name]
+    def fake(name):  # -X utf8: what PYTHONUTF8=1 (ignored with -I) gives a real Python engine
+        return [py, "-I", "-X", "utf8", ENGINE, name]
 
     platform = rt.env.get("VIDX_FAKE_PLATFORM")
     if platform:

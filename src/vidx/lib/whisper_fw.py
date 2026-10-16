@@ -17,7 +17,7 @@ import json
 import os
 import sys
 
-from common import read_wav
+from common import read_wav, unix_stderr
 
 
 def args():
@@ -93,4 +93,5 @@ def main():
 
 
 if __name__ == "__main__":
+    unix_stderr()
     main()

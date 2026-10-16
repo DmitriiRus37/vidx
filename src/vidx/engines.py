@@ -41,8 +41,8 @@ class Engine:
     drop: str | None = None  # stderr lines containing this are not shown
     env: dict = field(default_factory=dict)  # added to the environment of the program
 
-    def argv(self, *args):
-        return [*self.program, *map(str, args)]
+    def argv(self, *args):  # a str stays as it is: a jobs.Text (the prompt) must stay marked as text
+        return [*self.program, *(a if isinstance(a, str) else str(a) for a in args)]
 
 
 @dataclass
@@ -112,7 +112,8 @@ class Registry:
     def uv_tool_dir(self):
         if self._uv_tool_dir is None:
             try:
-                r = subprocess.run(["uv", "tool", "dir"], capture_output=True, text=True)
+                r = subprocess.run(["uv", "tool", "dir"], capture_output=True, text=True, encoding="utf-8",
+                                   errors="replace")
                 self._uv_tool_dir = r.stdout.strip()
             except OSError:  # no uv: vidx setup says how to install it
                 self._uv_tool_dir = ""

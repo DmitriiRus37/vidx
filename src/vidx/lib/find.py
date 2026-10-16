@@ -8,10 +8,11 @@ import os
 import re
 import sys
 
-from common import hms, load_segments
+from common import hms, load_segments, unix_stderr, unix_stdout
 
 
 def main():
+    unix_stdout()
     out, pat = sys.argv[1], sys.argv[2]
     only = sys.argv[3] if len(sys.argv) > 3 else None
     rx = re.compile(pat, re.IGNORECASE)
@@ -35,4 +36,5 @@ def main():
 
 
 if __name__ == "__main__":
+    unix_stderr()
     main()

@@ -85,6 +85,15 @@ def unix_stdout(stream=None):
     (stream or sys.stdout).reconfigure(encoding="utf-8", newline="\n")
 
 
+def unix_stderr(stream=None):
+    """Diagnostics as UTF-8 with LF when they go to a file or pipe (a -j log, vidx relaying them), like the data on
+    stdout: Windows would write CRLF there, and a script run without UTF-8 mode the locale's encoding (Latin-1, the
+    code page). A terminal keeps its own encoding and line ends. Called first by every script run by path."""
+    s = stream or sys.stderr
+    if not s.isatty():
+        s.reconfigure(encoding="utf-8", errors="backslashreplace", newline="\n")
+
+
 def dump_json(obj, path):
     with open(path, "w", encoding="utf-8", newline="\n") as f:
         json.dump(obj, f, ensure_ascii=False, indent=1)

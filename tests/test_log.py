@@ -30,13 +30,36 @@ def test_message_prefixes(capsys):
     assert capsys.readouterr().err == "==> merging\nwarn: x failed, continuing\nerror: bad\n"
 
 
-def test_windows_redirected_streams_become_utf8_with_lf():
-    raw = io.BytesIO()
-    s = io.TextIOWrapper(raw, encoding="cp1252", newline="\r\n")  # Windows' redirected stdout/stderr
-    log.setup_streams("win32", [s])
-    s.write("done → Видео\n")
-    s.flush()
-    assert raw.getvalue() == "done → Видео\n".encode()
-    other = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
-    log.setup_streams("linux", [other])
-    assert other.encoding == "cp1252"  # elsewhere untouched
+class Stream(io.TextIOWrapper):
+    def __init__(self, encoding, newline=None, tty=False):
+        super().__init__(io.BytesIO(), encoding=encoding, newline=newline)
+        self.tty = tty
+
+    def isatty(self):
+        return self.tty
+
+    def printed(self, text):
+        self.write(text)
+        self.flush()
+        return self.buffer.getvalue()
+
+
+def test_redirected_streams_become_utf8_with_lf_on_every_os():
+    """A file or pipe gets what vidx's files get: Windows' ANSI code page and CRLF, or a Latin-1 locale on
+    macOS/Linux, cannot write the → of our messages or a Cyrillic file name."""
+    for encoding, newline in (("cp1252", "\r\n"), ("latin-1", None), ("utf-8", None)):
+        s = Stream(encoding, newline)
+        log.setup_streams([s])
+        assert s.printed("done → Видео\n") == "done → Видео\n".encode()
+
+
+def test_a_terminal_keeps_its_encoding_and_shows_what_it_cannot_as_a_question_mark():
+    """A terminal shows text in its own encoding: UTF-8 bytes would turn every é of a Latin-1 terminal into
+    mojibake, so it keeps it, and a character it has no code for is replaced instead of stopping vidx."""
+    s = Stream("latin-1", "\n", tty=True)  # a terminal's line ends are its own: LF here, on Windows too
+    log.setup_streams([s])
+    assert s.encoding == "latin-1"
+    assert s.printed("café — Видео\n") == b"caf\xe9 ? ?????\n"
+    utf8 = Stream("utf-8", "\n", tty=True)
+    log.setup_streams([utf8])
+    assert utf8.printed("bad name \udcff\n") == b"bad name ?\n"  # an undecodable file name (surrogateescape)

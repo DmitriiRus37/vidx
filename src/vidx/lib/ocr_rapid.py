@@ -19,7 +19,7 @@ import os
 import sys
 import unicodedata
 
-from common import unix_stdout
+from common import unix_stderr, unix_stdout
 
 MODEL_OF = {"ru": "eslav", "uk": "eslav", "be": "eslav", "en": "en", "zh": "ch", "ja": "ch", "ar": "arabic",
             "hi": "devanagari", "ko": "korean"}
@@ -134,4 +134,5 @@ def main():
 
 
 if __name__ == "__main__":
+    unix_stderr()
     main()

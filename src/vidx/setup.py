@@ -24,6 +24,7 @@ from vidx.log import Fatal, log, warn
 
 NEEDED = ("ffmpeg", "ffprobe", "deno", "uv")
 GPU_CHOICES = ("auto", "cuda", "directml", "cpu")
+PROBE_TIMEOUT_S = 120  # a device probe imports torch / onnxruntime / ctranslate2: slow the first time, not stuck
 
 
 @dataclass
@@ -39,7 +40,7 @@ def nvidia_gpus():
     """Names of the NVIDIA GPUs the driver sees ([] without nvidia-smi)."""
     try:
         r = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"], capture_output=True, text=True,
-                           timeout=20)
+                           encoding="utf-8", errors="replace", timeout=20)
     except (OSError, subprocess.SubprocessError):
         return []
     return [x.strip() for x in r.stdout.splitlines() if x.strip()] if r.returncode == 0 else []
@@ -135,8 +136,8 @@ class Plan:
         s.append(Step("warm", reg.lid_argv("lid"), what="language ID"))
         p = reg.get("parakeet")
         s.append(Step("warm", p.argv(wav, "--model", p.model, "--output-dir", t), what="parakeet"))
-        s.append(Step("warm", [self.python(".venv-giga"), "-I", "-c",
-                               'import gigaam; gigaam.load_model("v3_e2e_rnnt", device="cpu")'], what="GigaAM"))
+        giga = isolated(self.python(".venv-giga"), paths.LIB / "gigaam_warm.py", reg.get("gigaam").model)
+        s.append(Step("warm", giga, what="GigaAM"))
         if self.platform != "darwin":
             o, png = reg.get("ocr"), os.path.join(t, "blank.png")
             s.append(Step("warm", ["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "color=white:s=64x64",
@@ -145,18 +146,22 @@ class Plan:
         return s
 
     def device_probes(self):
-        """(engine, argv printing its device) for the venvs of this platform."""
-        lib = str(paths.LIB)
-
-        def probe(venv, code):
-            return [self.python(venv), "-I", "-c", f"import sys; sys.path.insert(0, {lib!r}); {code}"]
+        """(engine, argv printing its device) for the venvs of this platform: lib/device.py in each venv."""
+        def probe(venv, engine):
+            return isolated(self.python(venv), paths.LIB / "device.py", engine)
 
         if self.platform == "darwin":
-            return [("GigaAM", probe(".venv-giga", "import torch, gigaam_run; print(gigaam_run.device(torch))"))]
-        return [("whisper, turbo, language ID", probe(".venv-whisper",
-                                                      "import whisper_fw; print(' '.join(whisper_fw.devices()[0]))")),
-                ("parakeet", probe(".venv-onnx", "import parakeet_onnx; print(parakeet_onnx.providers()[0])")),
-                ("GigaAM", probe(".venv-giga", "import torch, gigaam_run; print(gigaam_run.device(torch))"))]
+            return [("GigaAM", probe(".venv-giga", "gigaam"))]
+        return [("whisper, turbo, language ID", probe(".venv-whisper", "whisper")),
+                ("parakeet", probe(".venv-onnx", "parakeet")),
+                ("GigaAM", probe(".venv-giga", "gigaam"))]
+
+
+def isolated(python, script, *args):
+    """A lib script run by path in an engine venv, isolated: -I (no PYTHON* variables, no user site, neither the
+    current directory nor the script's on sys.path: the script adds lib/ itself) and -X utf8, as -I also ignores the
+    PYTHONUTF8=1 of vidx's children, and report_devices reads the output as UTF-8."""
+    return [python, "-I", "-X", "utf8", str(script), *map(str, args)]
 
 
 def show(step, platform=None):
@@ -258,9 +263,12 @@ def execute(plan, rt):
 def report_devices(plan):
     for name, argv in plan.device_probes():
         try:
-            r = subprocess.run(argv, capture_output=True, text=True, timeout=120)
+            r = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                               timeout=PROBE_TIMEOUT_S)
             why = (r.stderr.strip().splitlines() or ["?"])[-1]
             dev = r.stdout.strip() if r.returncode == 0 else f"unknown ({why})"
+        except subprocess.TimeoutExpired:  # killed by run(); the report and the other probes go on
+            dev = f"unknown (timed out after {PROBE_TIMEOUT_S} s)"
         except OSError as e:
             dev = f"unknown ({e})"
         print(f"devices: {name}: {dev}")

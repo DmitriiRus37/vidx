@@ -38,12 +38,16 @@ def use_colours(stream=None, env=None, platform=None, enable_vt=enable_windows_v
     return on
 
 
-def setup_streams(platform=None, streams=None):
-    """Windows: stdout/stderr redirected to a file or pipe use the ANSI code page, where the → of our messages
-    or a Cyrillic file name cannot be written, and CRLF line ends; use UTF-8 and LF there, as on macOS and
-    Linux (consoles are unaffected)."""
-    if (platform or sys.platform) == "win32":
-        for s in streams or (sys.stdout, sys.stderr):
+def setup_streams(streams=None):
+    """vidx's stdout and stderr on every OS. A file or pipe gets UTF-8 with LF, as vidx's files do: Windows
+    would write its ANSI code page and CRLF there, a Latin-1 locale on macOS/Linux Latin-1, neither of which
+    has the → of our messages or a Cyrillic file name. A terminal keeps its own encoding (UTF-8 bytes would
+    garble every é of a Latin-1 terminal; the Windows console takes Unicode) and shows a character it has no
+    code for as "?" instead of stopping vidx."""
+    for s in streams or (sys.stdout, sys.stderr):
+        if s.isatty():
+            s.reconfigure(errors="replace")
+        else:
             s.reconfigure(encoding="utf-8", errors="backslashreplace", newline="\n")
 
 

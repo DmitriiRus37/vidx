@@ -32,12 +32,14 @@ Always `--isolated`: without it uv installs into `.venv`, which is vidx's own he
   top-level modules): `languages.py` (the one table of per-language settings; new language → one row +
   tests), `lid.py` (language ID: mlx-whisper or faster-whisper by interpreter), `regions.py`,
   `detect_lang.py`, `merge.py` (`md()` escapes outside text), `frames.py`, `find.py`, engine runners
-  (`gigaam_run.py`, `vosk_run.py`, `whisper_fw.py`, `parakeet_onnx.py`, `ocr_rapid.py`) and the Apple-only
-  Swift helpers (`ocr.swift`, `apple_asr.swift`, compiled by `vidx setup` into `<home>/bin`).
+  (`gigaam_run.py`, `vosk_run.py`, `whisper_fw.py`, `parakeet_onnx.py`, `ocr_rapid.py`), `vidx setup`'s
+  `device.py` (device report) and `gigaam_warm.py` (model download), and the Apple-only Swift helpers
+  (`ocr.swift`, `apple_asr.swift`, compiled by `vidx setup` into `<home>/bin`).
 - `tests/fakes/` — fake engines (`VIDX_FAKE_ENGINES=1` loads `hook.py`; `VIDX_FAKE_PLATFORM` simulates
   darwin/linux/win32); `tests/fixtures/`, `tests/golden/`.
-- `.github/workflows/` — `ci.yml` (3 OS × Python 3.11/3.14, fake engines), `smoke.yml` (real engines, small
-  models, Linux/Windows).
+- `.github/workflows/` — `ci.yml` (3 OS × Python 3.11/3.14, fake engines, plus `latin-1`: the whole suite on
+  Linux in a generated `en_US.ISO-8859-1` locale with `PYTHONUTF8=0`), `smoke.yml` (real engines, small
+  models, Linux/Windows; nightly and manual from the default branch, fails if `vidx setup` names no device).
 - `docs/plans/` — plans (AS IS / TO BE steps) and `2026-10-11-porting-analysis.md` (platform decisions,
   the Windows validation checklist).
 
@@ -59,10 +61,16 @@ Always `--isolated`: without it uv installs into `.venv`, which is vidx's own he
   same everywhere. An engine runner takes the macOS tool's command line and writes its JSON keys.
 - **Windows**: every text `open()` names `encoding="utf-8"` and writes `newline="\n"` (a test checks);
   no symlinks required, no shell; process groups via `jobs.spawn`; paths via `os.path`/`paths`.
+- **Any locale** (the `latin-1` job): a free-text argument to a program (prompt, regex, URL) is a `jobs.Text`
+  (UTF-8 in every locale), a path a plain str (the locale's bytes); every lib script run by path calls
+  `common.unix_stderr()` first, and data on stdout goes through `common.unix_stdout()` (UTF-8 + LF); vidx's
+  own stdout/stderr are set up by `log.setup_streams`, and engine stderr is relayed by `jobs.relay` only to a
+  non-UTF-8 terminal.
 - Python 3.11–3.14 for `src/` and tests (GigaAM venv is 3.13: onnxruntime 1.23 has no 3.14 build; the
   Linux/Windows engine venvs are 3.13).
-- Keep the security properties: no `-c` snippets in the orchestrator (JSON is read in-process; the fake
-  engine runs with `-I`), lib scripts run by path (never the cwd on `sys.path`; the launcher uses `-P`),
-  the `.vidx/` marker before writing into `-o`, option stamps per step, `--ignore-config --no-playlist`
-  for yt-dlp, video-id sanitising, escaped Markdown for outside text, Ctrl-C kills child process trees on
-  every OS, argv lists only (no `shell=True`), zip-slip checks on downloads.
+- Keep the security properties: no `-c` snippets in the orchestrator (JSON is read in-process; device probes
+  and warm-ups are lib scripts run with `-I -X utf8`; the fake engine runs with `-I`; a test checks), lib
+  scripts run by path (never the cwd on `sys.path`; the launcher uses `-P`), the `.vidx/` marker before writing
+  into `-o`, option stamps per step, `--ignore-config --no-playlist` for yt-dlp, video-id sanitising, escaped
+  Markdown for outside text, Ctrl-C kills child process trees on every OS, argv lists only (no `shell=True`),
+  zip-slip checks on downloads.

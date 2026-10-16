@@ -85,3 +85,40 @@ def test_percent_in_the_temp_dir(tmp_path, monkeypatch):
     frames = json.loads((tmp_path / "o%2d" / "frames" / "frames.json").read_text(encoding="utf-8"))
     assert frames and all(f["file"].endswith(".jpg") for f in frames)
 
+
+
+def spy_spawn(monkeypatch):
+    from vidx import jobs
+
+    seen, real = [], jobs.spawn
+    monkeypatch.setattr(jobs, "spawn", lambda argv, *a, **k: seen.append(list(argv)) or real(argv, *a, **k))
+    return seen
+
+
+@needs_ffmpeg
+def test_the_glossary_prompt_goes_to_whisper_as_text(tmp_path, monkeypatch):
+    """The prompt is text, not a path: jobs.spawn sends it as UTF-8 in every locale (jobs.Text)."""
+    from vidx import jobs
+
+    seen = spy_spawn(monkeypatch)
+    gl = tmp_path / "g.txt"
+    gl.write_text("prompt: café\n", encoding="utf-8", newline="\n")
+    assert run_in_process(tmp_path, monkeypatch, MEDIA / "ru_slides.mp4", "-l", "ru", "-o", "out", "-e", "whisper",
+                          "--no-frames", "-g", gl) == 0
+    prompts = [argv[argv.index("--initial-prompt") + 1] for argv in seen if "--initial-prompt" in argv]
+    assert prompts == ["café"] and type(prompts[0]) is jobs.Text
+
+
+def test_the_url_goes_to_ytdlp_as_text(tmp_path, monkeypatch):
+    """A URL is text (yt-dlp reads its argv as UTF-8 in vidx's PYTHONUTF8=1), not a file name."""
+    from vidx import jobs
+    from vidx.log import Fatal
+    from vidx.options import parse_run
+
+    calls = []
+    monkeypatch.setattr(pipeline, "capture", lambda argv, **k: calls.append(argv) or (1, ""))
+    monkeypatch.setattr(pipeline.Runtime, "which", lambda self, tool: tool)
+    run = pipeline.Run(parse_run(["https://example.com/café"]), pipeline.Runtime(env={}))
+    with pytest.raises(Fatal, match="could not read the video id"):
+        run.download()
+    assert calls[0][-1] == "https://example.com/café" and type(calls[0][-1]) is jobs.Text

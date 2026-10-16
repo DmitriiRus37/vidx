@@ -31,7 +31,18 @@ LID_MODEL / lid_py (the interpreter and the model id); see lid.py.
 import sys
 from dataclasses import dataclass
 
-from common import FRAME_S, SILENCE_RMS, dump_json, frame_rms, is_silent, load_segments, pause_cuts, read_wav, top
+from common import (
+    FRAME_S,
+    SILENCE_RMS,
+    dump_json,
+    frame_rms,
+    is_silent,
+    load_segments,
+    pause_cuts,
+    read_wav,
+    top,
+    unix_stderr,
+)
 
 SEG_MIN_S, SEG_MAX_S = 2, 8
 PAUSE_S, QUIET_DB, LOUD_PERCENTILE = 0.2, 26, 90
@@ -253,4 +264,5 @@ def main():
 
 
 if __name__ == "__main__":
+    unix_stderr()
     main()

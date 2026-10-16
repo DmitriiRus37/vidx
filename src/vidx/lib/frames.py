@@ -15,7 +15,7 @@ import re
 import sys
 
 import numpy as np
-from common import dump_json, hms
+from common import dump_json, hms, unix_stderr
 from PIL import Image, ImageDraw, ImageFont
 
 THUMB = (240, 135)
@@ -104,4 +104,5 @@ def main():
 
 
 if __name__ == "__main__":
+    unix_stderr()
     main()

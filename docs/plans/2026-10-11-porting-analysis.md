@@ -473,6 +473,8 @@ Machine: Windows 11 x64, PowerShell. Record results (time per engine, errors) in
 | P13 CI | `tests: OS-neutral paths and UTF-8 decoding for Windows`; `ci: GitHub Actions on macOS, Linux and Windows` |
 | P14 validation, docs | `tests: the real GigaAM test runs on macOS too`; `tests: the Apple timeout help is checked in the macOS help`; this section; READMEs and CLAUDE.md |
 | first Windows CI (10.3) | `tests: UTF-8 and LF in the tests' own text files`; `log: LF on vidx's redirected stdout and stderr on Windows`; `tests: the stdout-to-file job prints LF itself`; `tests: compare the regions' parakeet path by its parts`; `tests: no file appended to by processes running together`; `state: one failed-job append at a time`; `jobs: wait for programs in slices, so Ctrl-Break stops -j 1 on Windows`; `lib: scripts print their data as UTF-8 whoever runs them`; `ci: run smoke on pushes to porting for now` (and its removal) |
+| locale, find, program output (10.3) | `log: UTF-8 and LF on redirected output on every OS, no crash on a non-UTF-8 terminal`; `find: hits as UTF-8 with LF on every OS, printed through vidx's stdout`; `setup: name the encoding of every program output read as text`; `ci: the whole suite in a Latin-1 locale on Linux`; `jobs: arguments a non-UTF-8 locale cannot encode go to children as UTF-8`; `tests: the emulated terminals write LF on Windows too`; `tests: only ASCII on the command lines the tests start themselves`; `ci: run smoke on pushes to porting again for now` (and its removal) |
+| open items of 10.4 (10.3) | `setup: a device probe that times out is reported, not fatal`; `setup: device probes and the GigaAM warm-up as lib scripts run by path`; `jobs: text arguments go to children as UTF-8 in every locale`; `lib: scripts' stderr is UTF-8 with LF when it goes to a file or pipe`; `jobs: engine stderr re-encoded for a non-UTF-8 terminal`; `tests: the relay tests' child writes LF on Windows too`; `ci: smoke fails when vidx setup cannot name a device`; `ci: run smoke on pushes to porting again for now` (and its removal) |
 
 ### 10.2 Where the build differs from sections 1-9
 
@@ -576,13 +578,98 @@ Machine: Windows 11 x64, PowerShell. Record results (time per engine, errors) in
   "суп" and "soup"; `ru_slides.mp4 -e whisper,apple` → "Apple SpeechTranscriber: not available on this
   platform", OCR text in `ocr.md`.
 
+**Locale, `vidx find` and program output** (2026-10-17; three issues the Windows pass found and left open):
+
+- *non-UTF-8 locale on macOS/Linux* (`LC_ALL=en_US.ISO8859-1 PYTHONUTF8=0`): 10 tests failed, and
+  `vidx help` stopped at its first "—" with UnicodeEncodeError, because `log.setup_streams` reconfigured
+  stdout/stderr only on Windows. Decision, now on every OS: a file or pipe gets UTF-8 + LF
+  (`errors="backslashreplace"`, so an undecodable file name cannot stop vidx), the same bytes as vidx's
+  files and as the Windows rule; a terminal keeps its own encoding with `errors="replace"`. Rejected:
+  UTF-8 to the terminal too (a Latin-1 terminal would garble every é it can show, not only what it
+  cannot), and `errors="replace"` alone (redirected output would be Latin-1, unlike vidx's files and
+  unlike Windows). The Windows console takes Unicode and is unaffected;
+- *`vidx find` redirected on Windows*: UTF-8 but CRLF, as find.py printed with the platform's newline.
+  find.py now uses `common.unix_stdout` like the other lib scripts, and vidx prints the hits through its
+  own stdout, so they follow the rule above (on a terminal too). No other lib script prints data without
+  it; the scripts' stderr diagnostics, like the engines' and ffmpeg's, are left as the programs write them;
+- *program output read as text*: `uv tool dir`, `nvidia-smi` and the device probes used `subprocess`
+  `text=True` in the locale's encoding (the code page on Windows, where uv prints a non-ASCII path in
+  UTF-8). They are read as `encoding="utf-8", errors="replace"`, and the probes print UTF-8 themselves
+  (`-X utf8`: their `-I` ignores the `PYTHONUTF8=1` vidx gives its children). `test_text_io.py` now also
+  requires an encoding for `subprocess` text mode, in `src/` and `tests/` (13 test calls had none);
+- *CI*: a new `ci` job, `latin-1`, generates `en_US.ISO-8859-1` on ubuntu-24.04 and runs the whole suite
+  with `PYTHONUTF8=0`, after checking that the locale took effect; the Latin-1 merge test, so far
+  macOS-only, looks for the glibc spelling too and runs there. Its first run (38972351951) found what macOS
+  cannot show, as macOS encodes argv in UTF-8 whatever the locale: Linux encodes argv in the locale's
+  encoding, so a Cyrillic glossary word for whisper stopped vidx before the engine started. An argument
+  the locale cannot encode now goes as UTF-8 (`jobs.os_arg`), in which vidx's Python children (UTF-8
+  mode) read their argv; whatever the locale can encode, every path the OS gave vidx included, is passed
+  as before. The fake engine runs with `-X utf8` like a real Python engine, and the glossary test checks
+  the word arrives. The same run had two test-only failures: two tests put Cyrillic on their own command
+  lines (no user can in that locale either; now `\u` escapes), and on Windows the new terminal tests'
+  stand-in terminal wrote CRLF;
+- results: `ci` run 38973790334 green on all seven jobs: macOS `514 passed, 2 skipped` (3.11, 3.14),
+  Ubuntu `513 passed, 3 skipped` (the Windows console tests and the Latin-1 test, which runs in
+  `latin-1`), Windows `508 passed, 8 skipped` (as before, the Latin-1 test included), `latin-1`
+  `514 passed, 2 skipped` (the Windows console tests only). `smoke` (temporary push trigger again, removed
+  afterwards): runs 38972351935 and 38973790242 green on Ubuntu and Windows; device report unchanged
+  (`whisper, turbo, language ID: cpu int8`, `parakeet: CPUExecutionProvider`, `GigaAM: cpu`), real backend
+  tests `13 passed, 1 xfailed`. On this Mac the suite passes in the Latin-1 locale too (3.14).
+
+**Text arguments, engine stderr, setup probes** (2026-10-17; 10.4 item 7 and two more setup issues):
+
+- *text arguments in a non-UTF-8 locale* (`485f8d4`): `jobs.os_arg` sent as UTF-8 only what the locale could not
+  encode, so `café` (Latin-1 can encode it) reached whisper as the byte 0xe9, which its UTF-8 mode reads as
+  an undecodable byte, and `vidx find out café` matched nothing. Decision: text arguments are marked
+  (`jobs.Text`: the whisper prompt, the find regex, the yt-dlp URL and `--sub-langs`) and go as UTF-8 on
+  POSIX in every locale; a plain str (every path) keeps the locale's bytes, so a file name the OS gave vidx
+  opens as before; Windows gets Unicode either way. `Engine.argv` keeps a `Text` marked. Rejected: passing
+  the text in a UTF-8 file, the environment or stdin: the engines take the macOS tools' command line
+  (`mlx_whisper --initial-prompt`), so every engine and the fake would need a second way in, and yt-dlp
+  takes its URL only on argv. Tests: the encoding per platform with an emulated Latin-1 `os.fsencode`; that
+  the prompt, regex and URL arrive as `Text`; end to end, a glossary `café`/`Деплой` and `vidx find … café`,
+  which fail in `latin-1` without the fix (macOS encodes argv in UTF-8 whatever the locale);
+- *lib scripts' stderr* (`da53489`): their diagnostics followed the locale (Latin-1, the code page) and CRLF
+  on Windows in a `-j` log or pipe, unlike their data. `common.unix_stderr()`, called first by every script
+  run by path (a test checks), gives a redirected stderr UTF-8 + LF; a terminal keeps its own. Tested with
+  whisper_fw.py's error naming `café.wav`, under `PYTHONIOENCODING=latin-1` on every OS and in the real
+  Latin-1 locale;
+- *engine stderr on a non-UTF-8 terminal* (`938ec26`): vidx's Python children write UTF-8, so a Latin-1
+  terminal showed `cafÃ©`. When vidx's stderr is a terminal that is not UTF-8, a program's stderr now goes
+  through vidx (`jobs.relay`, also for `capture`), piece by piece at `\r`/`\n` so progress lines still show
+  as drawn, written in the terminal's encoding with `?`; a piece that is not UTF-8 (ffmpeg naming a Latin-1
+  file) is read in the locale's encoding. Rejected: relaying on every terminal (programs would no longer
+  see a terminal: colours and progress bars change for everyone, to fix a rare locale). Tested with a
+  stand-in Latin-1 terminal and, on macOS and in `latin-1`, through a real pseudo-terminal;
+- *a device probe's timeout* (`dc931d2`): `report_devices` caught only OSError, so a probe that hit its 120 s
+  timeout ended `vidx setup` with TimeoutExpired after the environments were built; it now reports
+  `unknown (timed out after 120 s)` and runs the next probe (a test with a sleeping fake probe);
+- *no `-c` snippets* (`eb50086`): the device probes and the GigaAM warm-up were `python -I -c <code>`, against
+  the rule in CLAUDE.md. They are `lib/device.py <engine>` and `lib/gigaam_warm.py <model>`, run by path with
+  `-I -X utf8` as before (no PYTHON* variables, user site or current directory; the script puts its own
+  directory back on `sys.path`). A test keeps the constant `"-c"` out of `src/vidx/*.py` and the fake hook,
+  one checks every setup plan. On this Mac both scripts ran in the real `.venv-giga` (`mps`; the model
+  loaded from its cache). Smoke now fails when a probe reports `unknown` (`ci: smoke fails when vidx setup
+  cannot name a device`), which a broken probe script would otherwise hide;
+- results: this Mac: `538 passed, 2 skipped` on 3.14 and 3.11 and in the Latin-1 locale (3.14); real
+  (`-m real`) `29 passed, 13 skipped`, as before. `ci` run 38978143405 failed on Windows only, in two
+  new tests: their stand-in child wrote its stderr with CRLF, which the relay passes on as it is (lib scripts
+  write LF; the child now does too, `tests: the relay tests' child writes LF on Windows too`). `ci` run
+  38978948169 green on all seven jobs: macOS `538 passed, 2 skipped` (3.11, 3.14), Ubuntu `535 passed,
+  5 skipped` (the two Windows console tests and the three real Latin-1 tests, which run in `latin-1`), Windows
+  `530 passed, 10 skipped` (as before, plus the real Latin-1 stderr and pseudo-terminal tests), `latin-1`
+  `538 passed, 2 skipped` (the Windows console tests only). `smoke` (temporary push trigger, removed
+  afterwards): run 38978143532 green on Ubuntu and Windows; every probe named its device (`whisper, turbo,
+  language ID: cpu int8`, `parakeet: CPUExecutionProvider`, `GigaAM: cpu`), real backend tests `13 passed,
+  1 xfailed`, the whole runs as before.
+
 Not covered by the runners (section 9 still applies on a real machine): a person's Ctrl-C in a console
 (the test sends CTRL_BREAK_EVENT to vidx's own group), Developer Mode symlinks, NVIDIA/CUDA and DirectML,
 a non-ASCII user profile (`%LOCALAPPDATA%`, Vosk), Task Manager check for leftovers after `-j 3` Ctrl-C,
 YouTube URLs.
 
 **CI**: `actionlint` 1.7.12 (with shellcheck) reports no errors for both workflows; `ci` is green on the
-three OSes, `smoke` on Linux and Windows (runs above).
+three OSes and in the Latin-1 locale, `smoke` on Linux and Windows (runs above).
 
 ### 10.4 Remaining
 
@@ -594,3 +681,7 @@ three OSes, `smoke` on Linux and Windows (runs above).
 5. Windows Job Objects (engines die even if vidx crashes) and Vosk with non-ASCII model paths on Windows
    (a user name in Cyrillic puts `%LOCALAPPDATA%` there; set `VIDX_HOME` to an ASCII path if it fails).
 6. Old plan Phase 5.2 (a real Belarusian recording) is unchanged.
+7. Done: non-UTF-8 locales on Linux (10.3): text arguments go as UTF-8 (`485f8d4`), the lib scripts' stderr is
+   UTF-8 + LF when redirected (`da53489`), and engine stderr is re-encoded for a non-UTF-8 terminal
+   (`938ec26`). Also done: a device probe's timeout no longer stops `vidx setup` (`dc931d2`), and the device
+   probes and the GigaAM warm-up are lib scripts instead of `-c` snippets (`eb50086`).

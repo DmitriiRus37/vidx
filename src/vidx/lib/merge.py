@@ -34,7 +34,7 @@ import re
 import sys
 
 import languages
-from common import hms, load_segments
+from common import hms, load_segments, unix_stderr
 
 WINDOW_S, PARA_S = 40, 55
 ALT_RATIO, ALT_MIN_S, SPAN_INSIDE = 2, 5, 0.6  # ALT_MIN_S x normal_cps: 80 chars ru/en, 22.5 zh
@@ -331,4 +331,5 @@ def main():
 
 
 if __name__ == "__main__":
+    unix_stderr()
     main()
