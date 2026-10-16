@@ -3,7 +3,8 @@
 Every external program runs through spawn(): its own process group (POSIX: a new session; Windows:
 CREATE_NEW_PROCESS_GROUP), stdin from the null device, PYTHONUTF8=1 for Python children. The terminal's
 Ctrl-C then reaches only vidx, which kills every running tree (kill_tree: psutil's view of the
-descendants, plus killpg on POSIX, or taskkill on Windows when psutil is missing) and exits 130.
+descendants, plus killpg on POSIX, or taskkill on Windows when psutil is missing) and exits 130. The main
+thread waits for programs in POLL_S slices (wait, communicate): Windows runs the handler only between them.
 """
 import contextlib
 import os
@@ -14,7 +15,8 @@ import sys
 import threading
 import time
 from collections.abc import Callable
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor
+from concurrent.futures import wait as wait_futures
 from dataclasses import dataclass
 
 from vidx import paths
@@ -26,6 +28,7 @@ except ImportError:  # optional on POSIX (killpg covers the tree); a dependency 
     psutil = None
 
 KILL_WAIT_S = 3
+POLL_S = 0.5  # a wait without a timeout blocks a Windows Ctrl-C / Ctrl-Break until the program ends
 _live = set()  # running Popen objects
 _live_lock = threading.Lock()
 _interrupted = threading.Event()
@@ -65,6 +68,32 @@ def spawn(argv, platform=None, stdout=None, stderr=None, env=None):
     with _live_lock:
         _live.add(p)
     return p
+
+
+def wait(p):
+    """p.wait(), in POLL_S slices so that an interrupt is handled while a program runs."""
+    while True:
+        try:
+            return p.wait(timeout=POLL_S)
+        except subprocess.TimeoutExpired:
+            continue
+
+
+def communicate(p):
+    """p.communicate() → (stdout, stderr), in POLL_S slices (a retry loses no output)."""
+    while True:
+        try:
+            return p.communicate(timeout=POLL_S)
+        except subprocess.TimeoutExpired:
+            continue
+
+
+def _copy_lines(stream, drop, dest):
+    for raw in stream:
+        line = raw.decode("utf-8", "replace")
+        if drop not in line:
+            dest.write(line)
+            dest.flush()
 
 
 def _forget(p):
@@ -156,14 +185,13 @@ class Context:
             target = self.stream
             err = subprocess.PIPE if drop else (target or None)
             p = spawn(argv, stdout=out_file or target, stderr=err, env=env)
-            if drop:
-                dest = target or sys.stderr
-                for raw in p.stderr:
-                    line = raw.decode("utf-8", "replace")
-                    if drop not in line:
-                        dest.write(line)
-                        dest.flush()
-            rc = p.wait()
+            pump = None
+            if drop:  # filtered in a thread: the main thread must stay in wait()'s slices
+                pump = threading.Thread(target=_copy_lines, args=(p.stderr, drop, target or sys.stderr), daemon=True)
+                pump.start()
+            rc = wait(p)
+            while pump and pump.is_alive():  # the rest of the program's stderr
+                pump.join(POLL_S)
             _forget(p)
             return rc
         finally:
@@ -223,7 +251,7 @@ def run_queue(queue, n, out):
     try:
         pending = {pool.submit(run_job, job, out, True) for job in queue}
         while pending:  # a timeout, so that Ctrl-C reaches the main thread on Windows too
-            done, pending = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
+            done, pending = wait_futures(pending, timeout=POLL_S, return_when=FIRST_COMPLETED)
             for f in done:
                 f.result()
     except BaseException:  # Ctrl-C: do not wait for the workers, whose programs are about to be killed

@@ -22,7 +22,7 @@ def test_run_writes_transcript(tmp_path):
     assert r.returncode == 0, r.stderr
     out = tmp_path / "out"
     assert (out / "transcript.md").exists()
-    assert "Fake gigaam ru" in (out / "transcript.txt").read_text()  # GigaAM is the ru base
+    assert "Fake gigaam ru" in (out / "transcript.txt").read_text(encoding="utf-8")  # GigaAM is the ru base
     engines = [c["engine"] for c in fake_calls(tmp_path)]
     assert engines == ["whisper", "vosk", "ocr", "gigaam", "parakeet", "turbo"]  # queue order
 
@@ -31,7 +31,7 @@ def test_failed_job_exit_3_rest_merged(tmp_path):
     r = run_vidx(FIXTURE, "-l", "ru", "-o", "out", tmp_path=tmp_path, env={"VIDX_FAKE_FAIL": "gigaam"})
     assert r.returncode == 3
     assert "failed jobs: GigaAM-v3 [ru]" in r.stderr
-    assert "Fake whisper ru" in (tmp_path / "out" / "transcript.txt").read_text()  # next base
+    assert "Fake whisper ru" in (tmp_path / "out" / "transcript.txt").read_text(encoding="utf-8")  # next base
 
 
 def test_second_run_is_cached(tmp_path):
@@ -49,7 +49,7 @@ def test_option_change_reruns_only_affected_steps(tmp_path):
     assert run_vidx(FIXTURE, "-l", "ru", "-o", "out", tmp_path=tmp_path).returncode == 0
     n = len(fake_calls(tmp_path))
     gl = tmp_path / "g.txt"
-    gl.write_text("prompt: Деплой\n")
+    gl.write_text("prompt: Деплой\n", encoding="utf-8", newline="\n")
     assert run_vidx(FIXTURE, "-l", "ru", "-o", "out", "-g", gl, tmp_path=tmp_path).returncode == 0
     assert sorted(c["engine"] for c in fake_calls(tmp_path)[n:]) == ["turbo", "whisper"]
 
@@ -78,7 +78,7 @@ def test_jobs_limit(tmp_path, jobs):
 def test_auto_language(tmp_path):
     r = run_vidx(FIXTURE, "-o", "out", tmp_path=tmp_path, env={"VIDX_FAKE_LANG": "en"})
     assert r.returncode == 0, r.stderr
-    assert (tmp_path / "out" / "lang.txt").read_text().strip() == "en"
+    assert (tmp_path / "out" / "lang.txt").read_text(encoding="utf-8").strip() == "en"
     assert "gigaam" not in [c["engine"] for c in fake_calls(tmp_path)]
 
 
@@ -99,7 +99,7 @@ def test_ctrl_c_stops_everything(tmp_path, jobs):
                          env=vidx_env(tmp_path, {"VIDX_FAKE_DELAY": "60"}), start_new_session=True,
                          stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, encoding="utf-8",
                          preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
-    pids = tmp_path / "fake.log.pids"
+    pids = tmp_path / "fake-calls.pids"
     deadline = time.time() + 30
     while not (pids.exists() and len(list(pids.iterdir())) >= jobs) and time.time() < deadline:
         time.sleep(0.1)
@@ -130,7 +130,7 @@ def test_ctrl_break_stops_everything_on_windows(tmp_path, jobs):
                          creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
                          stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
                          encoding="utf-8")
-    pids = tmp_path / "fake.log.pids"
+    pids = tmp_path / "fake-calls.pids"
     deadline = time.time() + 60
     while not (pids.exists() and len(list(pids.iterdir())) >= jobs) and time.time() < deadline:
         time.sleep(0.1)
@@ -187,7 +187,7 @@ def test_apple_timeout_marks_engine_failed_and_continues(tmp_path):
     assert r.returncode == 3
     assert "model download for de-DE timed out" in r.stderr
     assert "failed jobs: Apple SpeechTranscriber [de]" in r.stderr
-    assert "Fake whisper de" in (tmp_path / "out" / "transcript.txt").read_text()
+    assert "Fake whisper de" in (tmp_path / "out" / "transcript.txt").read_text(encoding="utf-8")
 
 
 def ocr_langs_of(tmp_path):
@@ -236,7 +236,7 @@ def test_mixed_regions_from_language_id_snapped_to_parakeet(tmp_path):
     assert r.returncode == 0, r.stderr
     args = regions_call(tmp_path)
     assert args[0] == LID_MODEL and args[1] == "ru,en"  # model first (lid_py)
-    assert args[-1].endswith("asr/parakeet.json")
+    assert Path(args[-1]).parts[-2:] == ("asr", "parakeet.json")  # an OS path: backslashes on Windows
     assert (tmp_path / "out" / "regions.json").exists()
 
 
@@ -245,7 +245,7 @@ def test_mixed_split_survives_a_parakeet_failure(tmp_path):
                  env={"VIDX_FAKE_FAIL": "parakeet"})
     assert r.returncode == 3
     assert len(regions_call(tmp_path)) == 4  # no parakeet.json to snap to
-    assert "whisper-large-v3@en" in (tmp_path / "out" / "transcript.md").read_text()  # still mixed
+    assert "whisper-large-v3@en" in (tmp_path / "out" / "transcript.md").read_text(encoding="utf-8")  # still mixed
 
 
 def test_mixed_without_parakeet_engine_does_not_add_it(tmp_path):
@@ -271,7 +271,7 @@ def test_three_languages_engines_per_region_language(tmp_path):
     assert sorted(c["args"][2] for c in calls if c["engine"] == "apple") == ["de-DE", "en-US"]  # no uk
     assert [c["engine"] for c in calls].count("parakeet") == 1  # all three are parakeet languages
     assert "gigaam" not in [c["engine"] for c in calls]
-    txt = (tmp_path / "out" / "transcript.txt").read_text()
+    txt = (tmp_path / "out" / "transcript.txt").read_text(encoding="utf-8")
     assert txt.splitlines() == ["[00:00:00] Fake whisper uk.", "[00:00:01] Fake whisper en.",
                                 "[00:00:03] Fake whisper de."]
 
@@ -298,7 +298,7 @@ def test_parakeet_only_when_it_knows_every_language(tmp_path):
 def test_gigaam_skipped_without_ru_region(tmp_path):
     data = tmp_path / "data"
     data.mkdir()
-    (data / "regions.json").write_text('[{"start": 0, "end": 4.06, "lang": "en"}]')
+    (data / "regions.json").write_text('[{"start": 0, "end": 4.06, "lang": "en"}]', encoding="utf-8", newline="\n")
     r = run_vidx(FIXTURE, "-l", "ru,en", "-o", "out", "-e", "gigaam,whisper", tmp_path=tmp_path,
                  env={"VIDX_FAKE_DATA": str(data)})
     assert r.returncode == 0, r.stderr
@@ -369,4 +369,4 @@ def test_regions_redone_when_parakeet_snapping_appears_or_goes(tmp_path):
     assert regions_runs("whisper", "parakeet") == 2  # now snapped to parakeet
     assert regions_runs("whisper", "parakeet") == 2  # same options: cached
     assert regions_runs("whisper") == 3  # parakeet gone: unsnapped again
-    assert "snap=none" in (tmp_path / "out" / ".vidx" / "regions.json.params").read_text()
+    assert "snap=none" in (tmp_path / "out" / ".vidx" / "regions.json.params").read_text(encoding="utf-8")

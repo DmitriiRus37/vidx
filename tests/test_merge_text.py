@@ -21,11 +21,12 @@ def test_capitalise(raw, want):
 
 def write_asr(out, name, segs):
     (out / "asr").mkdir(parents=True, exist_ok=True)
-    (out / "asr" / f"{name}.json").write_text(json.dumps({"segments": segs}, ensure_ascii=False))
+    (out / "asr" / f"{name}.json").write_text(json.dumps({"segments": segs}, ensure_ascii=False),
+                                              encoding="utf-8", newline="\n")
 
 
 def paragraph(out):
-    return (out / "transcript.md").read_text().split("**[00:00:00]** ")[1].strip()
+    return (out / "transcript.md").read_text(encoding="utf-8").split("**[00:00:00]** ")[1].strip()
 
 
 def test_zh_chunks_joined_without_spaces(tmp_path):
@@ -43,7 +44,8 @@ def test_mixed_zh_en_chunks_keep_a_space_at_the_switch(tmp_path):
     write_asr(out, "whisper-large-v3@en", [{"start": 6, "end": 9, "text": "Now in English."},
                                            {"start": 9, "end": 12, "text": "Second sentence."}])
     (out / "regions.json").write_text(json.dumps([{"start": 0, "end": 6, "lang": "zh"},
-                                                  {"start": 6, "end": 12, "lang": "en"}]))
+                                                  {"start": 6, "end": 12, "lang": "en"}]),
+                                      encoding="utf-8", newline="\n")
     run_merge(out, "--langs", "zh,en")
     assert paragraph(out) == "今天我们聊一聊天气。星期六天气晴朗温暖。 Now in English. Second sentence."
 
@@ -55,7 +57,8 @@ def test_mixed_en_zh_chunks_keep_a_space_at_the_switch(tmp_path):
     write_asr(out, "whisper-large-v3@zh", [{"start": 6, "end": 9, "text": "今天我们聊一聊天气。"},
                                            {"start": 9, "end": 12, "text": "星期六天气晴朗温暖。"}])
     (out / "regions.json").write_text(json.dumps([{"start": 0, "end": 6, "lang": "en"},
-                                                  {"start": 6, "end": 12, "lang": "zh"}]))
+                                                  {"start": 6, "end": 12, "lang": "zh"}]),
+                                      encoding="utf-8", newline="\n")
     run_merge(out, "--langs", "en,zh")
     assert paragraph(out) == "Now in English. 今天我们聊一聊天气。星期六天气晴朗温暖。"
 
@@ -68,6 +71,7 @@ def test_last_region_runs_to_the_end(tmp_path):
     write_asr(out, "whisper-large-v3@en", [{"start": 6, "end": 9, "text": "Now in English."},
                                            {"start": 9.5, "end": 11, "text": "One more sentence."}])
     (out / "regions.json").write_text(json.dumps([{"start": 0, "end": 5, "lang": "ru"},
-                                                  {"start": 5, "end": 10, "lang": "en"}]))
+                                                  {"start": 5, "end": 10, "lang": "en"}]),
+                                      encoding="utf-8", newline="\n")
     run_merge(out, "--langs", "ru,en")
-    assert (out / "transcript.txt").read_text().splitlines()[-1] == "[00:00:09] One more sentence."
+    assert (out / "transcript.txt").read_text(encoding="utf-8").splitlines()[-1] == "[00:00:09] One more sentence."

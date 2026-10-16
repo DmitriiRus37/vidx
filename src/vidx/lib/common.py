@@ -80,9 +80,9 @@ def pause_cuts(x, sr, lo_s, hi_s):
 
 
 def unix_stdout(stream=None):
-    """Print data with LF line ends on every OS: a script whose stdout vidx saves to a file (lang.txt,
-    ocr.jsonl) would write CRLF on Windows."""
-    (stream or sys.stdout).reconfigure(newline="\n")
+    """Print data as UTF-8 with LF line ends on every OS: a script whose stdout vidx saves to a file (lang.txt,
+    ocr.jsonl) would write CRLF on Windows, and, unless run with PYTHONUTF8=1 as vidx runs it, the code page."""
+    (stream or sys.stdout).reconfigure(encoding="utf-8", newline="\n")
 
 
 def dump_json(obj, path):

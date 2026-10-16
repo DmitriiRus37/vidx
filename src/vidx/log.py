@@ -40,10 +40,11 @@ def use_colours(stream=None, env=None, platform=None, enable_vt=enable_windows_v
 
 def setup_streams(platform=None, streams=None):
     """Windows: stdout/stderr redirected to a file or pipe use the ANSI code page, where the → of our messages
-    or a Cyrillic file name cannot be written; use UTF-8 there (consoles are unaffected)."""
+    or a Cyrillic file name cannot be written, and CRLF line ends; use UTF-8 and LF there, as on macOS and
+    Linux (consoles are unaffected)."""
     if (platform or sys.platform) == "win32":
         for s in streams or (sys.stdout, sys.stderr):
-            s.reconfigure(encoding="utf-8", errors="backslashreplace")
+            s.reconfigure(encoding="utf-8", errors="backslashreplace", newline="\n")
 
 
 def _say(text):

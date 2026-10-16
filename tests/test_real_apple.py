@@ -59,4 +59,4 @@ def test_installed_locale_transcribes(apple_asr, tmp_path):
     subprocess.run(["say", "-v", "Samantha", "-o", aiff, "Hello, this is a short test."], check=True)
     subprocess.run(["ffmpeg", "-loglevel", "error", "-i", aiff, "-ac", "1", "-ar", "16000", wav], check=True)
     subprocess.run([apple_asr, "--timeout", "60", "en-US", wav, tmp_path / "o.json"], check=True)
-    assert "short test" in (tmp_path / "o.json").read_text()
+    assert "short test" in (tmp_path / "o.json").read_text(encoding="utf-8")

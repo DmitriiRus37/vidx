@@ -33,12 +33,13 @@ def be_out(tmp_path, sources):
     (out / "asr").mkdir(parents=True)
     for name, text in sources.items():
         seg = {"start": 0.0, "end": 8.0, "text": text}
-        (out / "asr" / f"{name}.json").write_text(json.dumps({"segments": [seg]}, ensure_ascii=False))
+        (out / "asr" / f"{name}.json").write_text(json.dumps({"segments": [seg]}, ensure_ascii=False),
+                                                  encoding="utf-8", newline="\n")
     return run_merge(out, "--langs", "be")
 
 
 def test_merge_whisper_base_turbo_fallback(tmp_path):
     out = be_out(tmp_path, {"whisper-large-v3": BE_WHISPER, "whisper-turbo": BE_TURBO})
-    assert (out / "transcript.txt").read_text() == f"[00:00:00] {BE_WHISPER}\n"
+    assert (out / "transcript.txt").read_text(encoding="utf-8") == f"[00:00:00] {BE_WHISPER}\n"
     out = be_out(tmp_path / "2", {"whisper-turbo": BE_TURBO})  # whisper failed
-    assert (out / "transcript.txt").read_text() == f"[00:00:00] {BE_TURBO}\n"
+    assert (out / "transcript.txt").read_text(encoding="utf-8") == f"[00:00:00] {BE_TURBO}\n"

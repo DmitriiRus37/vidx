@@ -6,7 +6,7 @@ from helpers import check_golden, out_dir_from, run_merge
 
 def merged(lang, tmp_path, *args):
     out = run_merge(out_dir_from(f"merge/{lang}", tmp_path, lang), "--langs", lang, *args)
-    return out, (out / "transcript.txt").read_text()
+    return out, (out / "transcript.txt").read_text(encoding="utf-8")
 
 
 def test_zh_uses_whisper_not_parakeet_gibberish(tmp_path):
@@ -14,11 +14,12 @@ def test_zh_uses_whisper_not_parakeet_gibberish(tmp_path):
     out, txt = merged("zh", tmp_path)
     assert "今天我们聊一聊周末的天气" in txt
     assert not re.search(r"[A-Za-z]", txt), txt
-    assert "parakeet" not in (out / "transcript.md").read_text().split("Chunks per source:")[1].split("\n")[0]
+    md = (out / "transcript.md").read_text(encoding="utf-8")
+    assert "parakeet" not in md.split("Chunks per source:")[1].split("\n")[0]
     check_golden("zh", out)
 
 
 def test_parakeet_still_a_source_for_its_languages(tmp_path):
     out, _ = merged("uk", tmp_path)
-    head = (out / "transcript.md").read_text()
+    head = (out / "transcript.md").read_text(encoding="utf-8")
     assert "Text sources: parakeet, whisper-large-v3, whisper-turbo" in head

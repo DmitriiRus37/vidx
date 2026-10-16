@@ -3,7 +3,7 @@ or compiles with tests/fakes/engine.py, which writes canned output. The rest of 
 stamps, job queue, ffmpeg, frames.py, merge) runs for real. Environment:
   VIDX_TEST_PYTHON   Python with numpy + pillow, replaces vidx's helper venv (default: the Python running vidx)
   VIDX_FAKE_PLATFORM darwin | linux | win32: the engine registry of that platform (default: this one)
-  VIDX_FAKE_LOG      append one JSON line per fake call: engine, args, start, end
+  VIDX_FAKE_LOG      a directory: one JSON file per fake call (engine, args, start, end); pids in <it>.pids/
   VIDX_FAKE_DELAY    seconds each fake engine takes (default 0)
   VIDX_FAKE_FAIL     comma list of fake engines that fail (whisper,turbo,parakeet,gigaam,...)
   VIDX_FAKE_LANG     what the fake language detection prints (default ru)

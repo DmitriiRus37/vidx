@@ -120,7 +120,7 @@ def remove_sources(out):
 def capture(argv, quiet=False):
     """Run a program (registered for Ctrl-C), return (exit status, stdout text); quiet: no stderr."""
     p = jobs.spawn(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL if quiet else None)
-    out, _ = p.communicate()
+    out, _ = jobs.communicate(p)
     jobs._forget(p)
     return p.returncode, out.decode("utf-8", "replace")
 
@@ -484,7 +484,7 @@ class Run:
                 with open(showinfo, "wb") as log_file:
                     p = jobs.spawn([self.ffmpeg, "-nostdin", "-hide_banner", "-y", "-i", self.src, "-an", "-vf", vf,
                                     "-fps_mode", "vfr", "-q:v", "2", pattern], stdout=ctx.stream, stderr=log_file)
-                    rc = p.wait()
+                    rc = jobs.wait(p)
                     jobs._forget(p)
                 if rc != 0 or ctx.call([self.rt.helper_python, str(paths.LIB / "frames.py"), raw, showinfo,
                                         out.join("frames"), o.dedup, o.roi, o.crop]) != 0:

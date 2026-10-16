@@ -30,9 +30,10 @@ def test_fillers_removed_words_kept(lang, tmp_path):
     out = tmp_path / f"{lang}_vidx-out"
     (out / "asr").mkdir(parents=True)
     segs = [{"start": 10 * i, "end": 10 * i + 5, "text": raw} for i, (raw, _) in enumerate(CASES[lang])]
-    (out / "asr" / "whisper-large-v3.json").write_text(json.dumps({"segments": segs}, ensure_ascii=False))
+    (out / "asr" / "whisper-large-v3.json").write_text(json.dumps({"segments": segs}, ensure_ascii=False),
+                                                       encoding="utf-8", newline="\n")
     run_merge(out, "--langs", lang)
-    lines = [re.sub(r"^\[[\d:]+\] ", "", x) for x in (out / "transcript.txt").read_text().splitlines()]
+    lines = [re.sub(r"^\[[\d:]+\] ", "", x) for x in (out / "transcript.txt").read_text(encoding="utf-8").splitlines()]
     assert lines == [want for _, want in CASES[lang]]
 
 
@@ -42,11 +43,13 @@ def test_fillers_follow_the_region_language(tmp_path):
     (out / "asr").mkdir(parents=True)
     for lang, text in (("de", "Wir treffen uns um acht."), ("en", "Um, we meet at eight.")):
         seg = {"start": 0 if lang == "de" else 10, "end": 5 if lang == "de" else 15, "text": text}
-        (out / "asr" / f"whisper-large-v3@{lang}.json").write_text(json.dumps({"segments": [seg]}))
+        (out / "asr" / f"whisper-large-v3@{lang}.json").write_text(json.dumps({"segments": [seg]}),
+                                                                   encoding="utf-8", newline="\n")
     (out / "regions.json").write_text(json.dumps([{"start": 0, "end": 8, "lang": "de"},
-                                                  {"start": 8, "end": 20, "lang": "en"}]))
+                                                  {"start": 8, "end": 20, "lang": "en"}]),
+                                      encoding="utf-8", newline="\n")
     run_merge(out, "--langs", "de,en")
-    assert "Wir treffen uns um acht. We meet at eight." in (out / "transcript.md").read_text()
+    assert "Wir treffen uns um acht. We meet at eight." in (out / "transcript.md").read_text(encoding="utf-8")
 
 
 def test_every_listed_language_but_hi_has_fillers():

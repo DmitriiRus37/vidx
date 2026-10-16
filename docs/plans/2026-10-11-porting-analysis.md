@@ -472,6 +472,7 @@ Machine: Windows 11 x64, PowerShell. Record results (time per engine, errors) in
 | (new) | `engines: model overrides for small machines and smoke runs`; `texts: help per platform` |
 | P13 CI | `tests: OS-neutral paths and UTF-8 decoding for Windows`; `ci: GitHub Actions on macOS, Linux and Windows` |
 | P14 validation, docs | `tests: the real GigaAM test runs on macOS too`; `tests: the Apple timeout help is checked in the macOS help`; this section; READMEs and CLAUDE.md |
+| first Windows CI (10.3) | `tests: UTF-8 and LF in the tests' own text files`; `log: LF on vidx's redirected stdout and stderr on Windows`; `tests: the stdout-to-file job prints LF itself`; `tests: compare the regions' parakeet path by its parts`; `tests: no file appended to by processes running together`; `state: one failed-job append at a time`; `jobs: wait for programs in slices, so Ctrl-Break stops -j 1 on Windows`; `lib: scripts print their data as UTF-8 whoever runs them`; `ci: run smoke on pushes to porting for now` (and its removal) |
 
 ### 10.2 Where the build differs from sections 1-9
 
@@ -529,18 +530,64 @@ Machine: Windows 11 x64, PowerShell. Record results (time per engine, errors) in
   6.14 / 11.26 (macOS: 6.24 / 11.36), `-e apple` → "not available on this platform", exit 0; a second
   run of ru_en: every job cached; `vidx find` works.
 
-**Windows**: never executed. Covered by unit tests with a simulated platform (process creation flags,
-psutil and taskkill kill paths, SIGBREAK, `Scripts\python.exe`, `%LOCALAPPDATA%`, no-symlink fallback,
-code page and CRLF handling, winget commands, the registry and help), a Ctrl-Break end-to-end test that
-runs only on Windows, and `ci.yml`/`smoke.yml` for `windows-2025`, which have not run (no push from this
-session). Use the checklist of section 9 for the first real run.
+**Windows** (GitHub Actions `windows-2025`, x64, CPU only, 2026-10-16; no desktop machine yet):
 
-**CI**: `actionlint` 1.7.12 (with shellcheck) reports no errors for both workflows; they have never run.
+- the first `ci` run (38964699716) failed on Windows only, 35 tests on 3.11 and 3.14; macOS and Ubuntu were
+  green. Causes and fixes:
+  - *code page* (31 tests): the tests wrote fixture JSON and read transcripts with `read_text()` /
+    `write_text()` in cp1252 (UnicodeEncodeError on Cyrillic/CJK; German/Italian written as cp1252 bytes
+    that merge.py rightly rejected). vidx itself was correct. The text-file rule of `test_text_io.py` now
+    covers `tests/` too; goldens compare the bytes vidx wrote (LF), not a newline-translated read;
+  - *CRLF*: `log.setup_streams` made redirected stdout/stderr UTF-8 but left Windows' CRLF translation;
+    it now sets LF too (product). A test child's bare `print()` writes CRLF on Windows; `Context.call`
+    copies bytes, and LF is the printing script's job (`common.unix_stdout`), so the test's child now
+    switches to LF like the lib scripts;
+  - *appends are not atomic on Windows*: the C runtime appends by seeking to the end and then writing, so
+    the fake engines' shared call log and the job tests' `runs.log` lost and garbled lines when jobs
+    finished together (`test_jobs_limit[2]`: a half-overwritten JSON line, 5 calls instead of 6;
+    `test_limit_and_order`: job1's start missing, a missing `end`). Each fake call and stamp job now writes
+    its own file. The product had the same pattern: `.vidx/failed` is appended from the `-j N` worker
+    threads, so two jobs failing together could drop a label (exit 0 instead of 3); it now takes a lock
+    (a test emulates the seek-then-write append on every OS);
+  - *Ctrl-Break with `-j 1`* (`test_ctrl_break_stops_everything_on_windows[1]` timed out, `[2]` passed):
+    the main thread sat in `Popen.wait()` without a timeout, which on Windows blocks in
+    `WaitForSingleObject`; Python runs the SIGBREAK/SIGINT handler only after it returns, i.e. after the
+    whole engine. CTRL_BREAK_EVENT reaches vidx's group on the runner (the `-j 2` case proved it), so this
+    was a product bug, not a runner limitation: every orchestrator wait (`Context.call`, the frames ffmpeg,
+    `capture`) now waits in 0.5 s slices, a filtered stderr is read in a thread, and a test keeps
+    `src/vidx/*.py` free of `wait()`/`communicate()` without a timeout;
+  - *paths*: one test looked for `asr/parakeet.json` in a Windows path; it compares path parts now.
+- `ci` after the fixes (runs 38967223300, 38967670682, 38968493209): all six jobs green; Windows
+  `497 passed, 8 skipped` on 3.11 and 3.14, both Ctrl-Break cases included. Skipped on Windows, all by
+  design and unchanged: the POSIX Ctrl-C test (2) and the POSIX process-tree kill test (2; Windows
+  kill paths are unit-tested with a fake psutil and end-to-end by Ctrl-Break), the `sh` launcher (2), the
+  symlink test (no symlink rights on the runner) and the Latin-1 locale test (macOS only). No test was
+  skipped or loosened for Windows by these fixes;
+- `smoke` could not be dispatched: GitHub dispatches and schedules a workflow only from the default
+  branch, and `smoke.yml` exists only on `porting`. A temporary `push` trigger for `porting` ran it. First
+  run (38967670649): Ubuntu green; Windows `vidx setup --no-models` passed, but all 9 RapidOCR tests
+  failed: `ocr_rapid.py` printed its JSON in the pipe's code page when run by a test without
+  `PYTHONUTF8=1` (exit 1 on non-Latin titles; German `ö` arrived as the cp1252 byte 0xf6). The lib
+  scripts' data output is now UTF-8 + LF whoever runs them (`common.unix_stdout`). Second run
+  (38968493195): both jobs green. Windows: device report `whisper, turbo, language ID: cpu int8`,
+  `parakeet: CPUExecutionProvider`, `GigaAM: cpu`; real backend tests (Python 3.12 test env, engine
+  venvs 3.13, whisper `tiny`) `13 passed, 1 xfailed` (Hindi OCR, as on Linux); `ru_en.m4a -l ru,en -j 2`
+  → regions ru 0.0-17.6, en 17.6-30.4, ru 30.4-43.5 s (same as the Ubuntu job), transcript contains
+  "суп" and "soup"; `ru_slides.mp4 -e whisper,apple` → "Apple SpeechTranscriber: not available on this
+  platform", OCR text in `ocr.md`.
+
+Not covered by the runners (section 9 still applies on a real machine): a person's Ctrl-C in a console
+(the test sends CTRL_BREAK_EVENT to vidx's own group), Developer Mode symlinks, NVIDIA/CUDA and DirectML,
+a non-ASCII user profile (`%LOCALAPPDATA%`, Vosk), Task Manager check for leftovers after `-j 3` Ctrl-C,
+YouTube URLs.
+
+**CI**: `actionlint` 1.7.12 (with shellcheck) reports no errors for both workflows; `ci` is green on the
+three OSes, `smoke` on Linux and Windows (runs above).
 
 ### 10.4 Remaining
 
-1. Push the branch (owner) so that `ci.yml` runs on the three OSes; fix what Windows finds. Run
-   `smoke.yml` manually once.
+1. Done: `ci` and `smoke` are green on Windows (10.3); the temporary `push` trigger of `smoke.yml` is
+   removed again. After the merge, smoke runs nightly and on demand from `main`.
 2. Section 9 on a real Windows machine (CPU, then NVIDIA), and an NVIDIA run on Linux.
 3. Recalibrate merge thresholds on faster-whisper / onnx-asr output from real recordings.
 4. Hindi OCR on Linux/Windows; Cyrillic look-alike letters in RapidOCR output.

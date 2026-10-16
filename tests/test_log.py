@@ -30,9 +30,9 @@ def test_message_prefixes(capsys):
     assert capsys.readouterr().err == "==> merging\nwarn: x failed, continuing\nerror: bad\n"
 
 
-def test_windows_redirected_streams_become_utf8():
+def test_windows_redirected_streams_become_utf8_with_lf():
     raw = io.BytesIO()
-    s = io.TextIOWrapper(raw, encoding="cp1252")
+    s = io.TextIOWrapper(raw, encoding="cp1252", newline="\r\n")  # Windows' redirected stdout/stderr
     log.setup_streams("win32", [s])
     s.write("done → Видео\n")
     s.flush()

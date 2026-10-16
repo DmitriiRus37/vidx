@@ -19,6 +19,8 @@ import os
 import sys
 import unicodedata
 
+from common import unix_stdout
+
 MODEL_OF = {"ru": "eslav", "uk": "eslav", "be": "eslav", "en": "en", "zh": "ch", "ja": "ch", "ar": "arabic",
             "hi": "devanagari", "ko": "korean"}
 OVERLAP = 0.5
@@ -114,7 +116,7 @@ def main():
     if len(sys.argv) < 3:
         print("usage: ocr_rapid.py <lang,lang;lang,...> <image>...", file=sys.stderr)
         sys.exit(2)
-    sys.stdout.reconfigure(newline="\n")
+    unix_stdout()
     groups = [[x for x in g.split(",") if x] for g in sys.argv[1].split(";")]
     groups = [g for g in groups if g]
     reader = Reader()

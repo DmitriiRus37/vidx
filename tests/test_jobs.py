@@ -14,15 +14,18 @@ PY = [sys.executable, "-I", "-c"]
 
 
 def stamp_job(tmp_path, label, seconds=0.0, code=0, output=""):
-    """A job that records its start/end in tmp_path/runs.log and exits with code."""
+    """A job that records its start/end in tmp_path/runs/<label> and exits with code. One file per job: jobs
+    running together cannot share one appended file on Windows, where appends are not atomic."""
+    (tmp_path / "runs").mkdir(exist_ok=True)
     script = (f"import time,sys; f=open(sys.argv[1],'a'); f.write('start {label} %f\\n' % time.time()); f.flush();"
               f"time.sleep({seconds}); f.write('end {label} %f\\n' % time.time()); sys.exit({code})")
-    return jobs.Job(label, output, "p", jobs.command([*PY, script, str(tmp_path / "runs.log")]))
+    return jobs.Job(label, output, "p", jobs.command([*PY, script, str(tmp_path / "runs" / label)]))
 
 
 def runs(tmp_path):
-    rows = [line.split() for line in (tmp_path / "runs.log").read_text(encoding="utf-8").splitlines()]
-    return rows
+    """[(start|end, label, time)] of all stamp jobs, in time order."""
+    rows = [line.split() for f in (tmp_path / "runs").iterdir() for line in f.read_text(encoding="utf-8").splitlines()]
+    return sorted(rows, key=lambda row: float(row[2]))
 
 
 def peak(tmp_path):
@@ -93,7 +96,9 @@ def test_python_job_and_stdout_to_file(tmp_path, out):
 
     def body(ctx):
         ctx.say("frames: hello")
-        return ctx.call([*PY, "print('ru,en')"], stdout=str(target)) == 0
+        # call() saves the bytes as printed; LF on Windows is the script's job, as in lib/ (common.unix_stdout)
+        return ctx.call([*PY, "import sys; sys.stdout.reconfigure(newline='\\n'); print('ru,en')"],
+                        stdout=str(target)) == 0
 
     jobs.run_queue([jobs.Job("py", "", "", body), stamp_job(tmp_path, "x")], 2, out)
     assert target.read_bytes() == b"ru,en\n"
@@ -139,10 +144,10 @@ def test_kill_tree_kills_grandchildren(tmp_path, monkeypatch, with_psutil):
     pid_file = tmp_path / "grandchild"
     p = jobs.spawn([*PY, TREE, str(pid_file)])
     deadline = time.time() + 20
-    while not pid_file.exists() or not pid_file.read_text():
+    while not pid_file.exists() or not pid_file.read_text(encoding="utf-8"):
         assert time.time() < deadline
         time.sleep(0.05)
-    grandchild = int(pid_file.read_text())
+    grandchild = int(pid_file.read_text(encoding="utf-8"))
     jobs.kill_tree(p.pid)
     p.wait(timeout=5)  # (psutil may have reaped it already: then Popen reports 0)
     deadline = time.time() + 5
@@ -214,3 +219,61 @@ def test_interrupt_signals_per_platform():
     assert jobs.interrupt_signals("linux") == [signal.SIGINT, signal.SIGTERM]
     names = [getattr(s, "name", s) for s in jobs.interrupt_signals("win32")]
     assert names[:2] == ["SIGINT", "SIGTERM"] and names[2] in ("SIGBREAK", 21)
+
+
+# --- waits the Ctrl-C / Ctrl-Break handler can interrupt ------------------------------------------------------
+def blocking_waits(path):
+    """wait() / communicate() calls without a timeout: on Windows they block in WaitForSingleObject, and the
+    main thread's interrupt handler runs only when the program has ended (with -j 1, after a whole engine)."""
+    import ast
+
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in (
+                "wait", "communicate") and not node.args and "timeout" not in {k.arg for k in node.keywords}:
+            yield f"{path.name}:{node.lineno}: {node.func.attr}() without a timeout"
+
+
+def test_the_orchestrator_waits_in_slices():
+    from helpers import ROOT
+
+    found = [p for path in sorted((ROOT / "src" / "vidx").glob("*.py")) for p in blocking_waits(path)]
+    assert found == []
+
+
+def test_wait_returns_the_exit_status_after_slices():
+    slices = []
+
+    class Slow:
+        def wait(self, timeout=None):
+            slices.append(timeout)
+            if len(slices) < 3:
+                raise subprocess.TimeoutExpired("x", timeout)
+            return 7
+
+    assert jobs.wait(Slow()) == 7
+    assert slices == [jobs.POLL_S] * 3
+
+
+def test_dropped_stderr_is_read_off_the_main_thread(monkeypatch):
+    """call(drop=...) filters the program's stderr in a thread, so the main thread only waits (in slices)."""
+    import io
+    import threading
+
+    readers = []
+
+    class Lines(io.BytesIO):
+        def __iter__(self):
+            readers.append(threading.current_thread() is threading.main_thread())
+            return super().__iter__()
+
+    class Proc:
+        pid, stderr = 1, Lines(b"Fetching 4 files\nreal warning\n")
+
+        def wait(self, timeout=None):
+            assert timeout is not None
+            return 0
+
+    monkeypatch.setattr(jobs, "spawn", lambda argv, **kw: Proc())
+    shown = io.StringIO()
+    assert jobs.Context(shown).call(["x"], drop="Fetching") == 0
+    assert readers == [False] and shown.getvalue() == "real warning\n"

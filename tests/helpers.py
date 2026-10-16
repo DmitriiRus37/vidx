@@ -29,12 +29,12 @@ def run_merge(out, *args):
 def check_golden(case, out, files=("transcript.txt", "transcript.md")):
     """Compare out/<file> with tests/golden/<case>/<file>; VIDX_UPDATE_GOLDENS=1 rewrites them."""
     for name in files:
-        got = (out / name).read_text()
+        got = (out / name).read_bytes().decode("utf-8")  # as written: LF on every OS (want may be a CRLF checkout)
         want = GOLDEN / case / name
         if UPDATE_GOLDENS:
             want.parent.mkdir(parents=True, exist_ok=True)
-            want.write_text(got)
-        assert got == want.read_text(), f"{case}/{name} differs from the golden file"
+            want.write_text(got, encoding="utf-8", newline="\n")
+        assert got == want.read_text(encoding="utf-8"), f"{case}/{name} differs from the golden file"
 
 
 VIDX = ROOT / "vidx"  # the POSIX launcher of a checkout
@@ -49,14 +49,14 @@ def vidx_env(tmp_path, env=None):
     """The test's environment without the developer's VIDX_* settings, plus the fake-engine switches."""
     e = {k: v for k, v in os.environ.items() if not k.startswith("VIDX_")}
     e.update({"VIDX_FAKE_ENGINES": "1", "VIDX_TEST_PYTHON": sys.executable,
-              "VIDX_FAKE_LOG": str(tmp_path / "fake.log"), "HF_HUB_OFFLINE": "1", "NO_COLOR": "1"})
+              "VIDX_FAKE_LOG": str(tmp_path / "fake-calls"), "HF_HUB_OFFLINE": "1", "NO_COLOR": "1"})
     e.update(env or {})
     return e
 
 
 def run_vidx(*args, tmp_path, env=None, timeout=120):
-    """Run vidx with the fake engines (tests/fakes/); every fake call is logged to tmp_path/fake.log (one JSON
-    line per call)."""
+    """Run vidx with the fake engines (tests/fakes/); every fake call is logged in tmp_path/fake-calls/ (one
+    JSON file per call)."""
     e = vidx_env(tmp_path, env)
     return subprocess.run([*VIDX_CMD, *map(str, args)], cwd=tmp_path, env=e, capture_output=True, text=True,
                           encoding="utf-8", timeout=timeout)
@@ -67,9 +67,9 @@ def fake_calls(tmp_path, queries=False):
     queries=True the `apple_asr --locales` lookups are left out."""
     import json
 
-    log = tmp_path / "fake.log"
+    log = tmp_path / "fake-calls"
     if not log.exists():
         return []
-    with open(log) as f:
-        calls = [json.loads(line) for line in f]
+    calls = [json.loads(f.read_text(encoding="utf-8")) for f in log.iterdir()]
+    calls.sort(key=lambda c: (c["end"], c["start"]))  # in the order they finished, as a log would have them
     return [c for c in calls if queries or c["args"] != ["--locales"]]

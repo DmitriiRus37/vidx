@@ -62,7 +62,7 @@ def test_mixed_script_slide_reads_every_line_once(ocr, tmp_path, codes, lines):
 
 def test_unreadable_image_is_reported(ocr, tmp_path):
     bad = tmp_path / "bad.jpg"
-    bad.write_text("not an image")
+    bad.write_text("not an image", encoding="utf-8", newline="\n")
     r = subprocess.run([ocr, "en-US", bad], capture_output=True, text=True, check=True)
     assert json.loads(r.stdout) == {"file": "bad.jpg", "text": ""}
     assert "bad.jpg" in r.stderr

@@ -116,6 +116,17 @@ def test_unreadable_image_reported(stub, monkeypatch, capsys, tmp_path):
     assert "bad.jpg" in err
 
 
+def test_json_lines_are_utf8_with_lf_on_a_windows_pipe(stub, monkeypatch):
+    import io
+
+    raw = io.BytesIO()
+    monkeypatch.setattr(sys, "stdout", io.TextIOWrapper(raw, encoding="cp1252", newline="\r\n"))
+    monkeypatch.setattr(sys, "argv", ["ocr_rapid.py", "ru-RU,en-US", str(stub)])
+    ocr_rapid.main()
+    sys.stdout.flush()
+    assert raw.getvalue().endswith('Деплой в Kubernetes"}\n'.encode())
+
+
 def test_usage(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["ocr_rapid.py", "ru-RU"])
     with pytest.raises(SystemExit) as e:

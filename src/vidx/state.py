@@ -7,8 +7,11 @@ bash version wrote, byte for byte, so a folder made by either version is reused 
 """
 import os
 import re
+import threading
 
 from vidx.log import Fatal, warn
+
+_failed_lock = threading.Lock()  # -j N: jobs fail in worker threads; a Windows append is not atomic
 
 
 class OutDir:
@@ -73,7 +76,7 @@ class OutDir:
         open(self.join(".vidx", "failed"), "w", encoding="utf-8", newline="\n").close()
 
     def add_failed(self, label):
-        with open(self.join(".vidx", "failed"), "a", encoding="utf-8", newline="\n") as f:
+        with _failed_lock, open(self.join(".vidx", "failed"), "a", encoding="utf-8", newline="\n") as f:
             f.write(label + "\n")
 
     def failed(self):

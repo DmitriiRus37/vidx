@@ -100,12 +100,13 @@ def test_youtube_title_and_chapters_in_transcript(tmp_path):
     out = tmp_path / "t_vidx-out"
     (out / "asr").mkdir(parents=True)
     (out / "asr" / "whisper-large-v3.json").write_text(json.dumps({"segments": [
-        {"start": 1, "end": 3, "text": "Hello [there](https://evil.example/s)."}]}))
+        {"start": 1, "end": 3, "text": "Hello [there](https://evil.example/s)."}]}), encoding="utf-8", newline="\n")
     title = "Free prize: [click [here]](https://evil.example/phish)"
     (out / "info.json").write_text(json.dumps({"title": title, "webpage_url": "https://video.example/watch?v=1",
-                                               "chapters": [{"start_time": 0, "title": "Intro\n# Injected"}]}))
+                                               "chapters": [{"start_time": 0, "title": "Intro\n# Injected"}]}),
+                                   encoding="utf-8", newline="\n")
     run_merge(out, "--langs", "en")
-    doc = (out / "transcript.md").read_text()
+    doc = (out / "transcript.md").read_text(encoding="utf-8")
     types = [t.type for t in tokens(doc)]
     assert types.count("heading_open") == 2  # the title and the one chapter
     assert not set(types) & (INJECTED - {"heading_open"}), CM.render(doc)

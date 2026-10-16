@@ -320,18 +320,19 @@ macOS output. `vidx setup` reports the device each engine will use. On a machine
 engines run on the CPU: expect whisper large-v3 to be slow there, and consider
 `VIDX_MODEL_WHISPER=large-v3-turbo`.
 
-What was validated where (2026-10-11):
+What was validated where (2026-10-11; Windows 2026-10-16):
 
-| | macOS (Apple Silicon) | Linux (container, arm64, CPU) | Windows |
+| | macOS (Apple Silicon) | Linux (container, arm64, CPU) | Windows (GitHub Actions, x64, CPU) |
 |---|---|---|---|
-| unit + CLI tests (fake engines) | ✓ Python 3.11, 3.14 | ✓ Python 3.11, 3.13 | not run yet (CI is ready) |
-| real engine tests (`-m real`) | ✓ | ✓ with small models | not run |
-| whole runs on the test clips | ✓ same files as the bash version | ✓ | not run |
-| `vidx setup` | dry run | ✓ (`--no-models`) | not run |
+| unit + CLI tests (fake engines) | ✓ Python 3.11, 3.14 | ✓ Python 3.11, 3.13 | ✓ Python 3.11, 3.14 (`ci`) |
+| real engine tests (`-m real`) | ✓ | ✓ with small models | ✓ with small models (`smoke`) |
+| whole runs on the test clips | ✓ same files as the bash version | ✓ | ✓ `ru_en.m4a`, `ru_slides.mp4` (`smoke`) |
+| `vidx setup` | dry run | ✓ (`--no-models`) | ✓ (`--no-models`, `smoke`) |
 | NVIDIA GPU | — | not available here | not run |
 
-Windows support is written and unit-tested with a simulated platform but has never run on Windows;
-the checklist for a first real run is in [docs/plans/2026-10-11-porting-analysis.md](docs/plans/2026-10-11-porting-analysis.md).
+On Windows, vidx has run only on GitHub's runners so far, not on a desktop: a console Ctrl-C by hand,
+Developer Mode symlinks, NVIDIA and a non-ASCII user folder are still to check with the list in
+[docs/plans/2026-10-11-porting-analysis.md](docs/plans/2026-10-11-porting-analysis.md).
 
 ## Installation
 

@@ -1,7 +1,7 @@
 """Text files are UTF-8 with LF line ends on every OS.
 
 Windows opens text files in the ANSI code page (cp1252: Cyrillic cannot be written) and writes CRLF, so
-every text open() in vidx names its encoding, and every text write its newline."""
+every text open() in vidx and in its tests names its encoding, and every text write its newline."""
 import ast
 import os
 import subprocess
@@ -10,7 +10,7 @@ import sys
 import pytest
 from helpers import LIB, ROOT
 
-SOURCES = sorted((ROOT / "src").rglob("*.py")) + [ROOT / "tests" / "fakes" / "engine.py"]
+SOURCES = sorted((ROOT / "src").rglob("*.py")) + sorted((ROOT / "tests").rglob("*.py"))  # the tests run on Windows too
 
 
 def calls(path):
@@ -56,7 +56,7 @@ def test_every_text_open_names_encoding_and_newline():
 def test_rule_catches_a_bare_open(tmp_path):
     bad = tmp_path / "bad.py"
     bad.write_text('open("x")\nopen("y", "w", encoding="utf-8")\nopen("z", "rb")\nopen("v", encoding="utf-8")\n',
-                   encoding="utf-8")
+                   encoding="utf-8", newline="\n")
     assert list(problems(bad)) == ["bad.py:1: open() without encoding", "bad.py:2: text write without newline"]
 
 
@@ -84,13 +84,15 @@ def test_merge_in_a_latin1_locale(tmp_path):
     assert (out / "transcript.txt").read_bytes() == "[00:00:00] Мы начинаем. Дальше\n".encode()
 
 
-def test_unix_stdout_writes_lf_where_the_os_writes_crlf():
+def test_unix_stdout_writes_utf8_and_lf_where_the_os_would_not():
+    """A script's stdout on a Windows pipe: the code page and CRLF (vidx sets PYTHONUTF8=1 for its children, but
+    a script run on its own, e.g. by a test, does not get it)."""
     import io
 
     import common
 
-    stream = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", newline="\r\n")  # what Windows does by default
+    stream = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", newline="\r\n")
     common.unix_stdout(stream)
-    stream.write("ru,en\n")
+    stream.write("ru,en\nПогода\n")
     stream.flush()
-    assert stream.buffer.getvalue() == b"ru,en\n"
+    assert stream.buffer.getvalue() == "ru,en\nПогода\n".encode()

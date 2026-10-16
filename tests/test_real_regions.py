@@ -24,7 +24,7 @@ def run_regions(lid_backend, media, langs, tmp_path, parakeet=None):
         args.append(FIXTURES / "regions" / parakeet)
     r = subprocess.run(args, capture_output=True, text=True, env={**os.environ, "HF_HUB_OFFLINE": "1"})
     assert r.returncode == 0, r.stderr
-    with open(out) as f:
+    with open(out, encoding="utf-8") as f:
         return [(x["lang"], x["start"], x["end"]) for x in json.load(f)], r.stderr
 
 

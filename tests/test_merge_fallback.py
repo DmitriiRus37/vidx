@@ -46,17 +46,18 @@ def build(tmp_path):
             if alt:
                 segs.append({"start": t0 + alt[0], "end": t0 + alt[1], "text": alt[2]})
     for name, segs in (("gigaam", giga), ("parakeet", para), ("whisper-large-v3", whis)):
-        (out / "asr" / f"{name}.json").write_text(json.dumps({"segments": segs}, ensure_ascii=False))
+        (out / "asr" / f"{name}.json").write_text(json.dumps({"segments": segs}, ensure_ascii=False),
+                                                  encoding="utf-8", newline="\n")
     return out
 
 
 def test_fallback_thresholds(tmp_path):
     out = run_merge(build(tmp_path), "--langs", "ru")
-    lines = (out / "transcript.txt").read_text().splitlines()
+    lines = (out / "transcript.txt").read_text(encoding="utf-8").splitlines()
     assert len(lines) == len(PROBES)
     for line, (name, (base, p, w, replaced)) in zip(lines, PROBES.items(), strict=True):
         alts = [a[2] for a in (p, w) if a]
         got_alt = any(a[:20].capitalize() in line for a in alts) and len(line) > len(base) + 20
         assert got_alt == replaced, f"{name}: {line[:60]}"
-    head = (out / "transcript.md").read_text()
+    head = (out / "transcript.md").read_text(encoding="utf-8")
     assert f"fallbacks to parakeet/whisper: {sum(p[3] for p in PROBES.values())}" in head

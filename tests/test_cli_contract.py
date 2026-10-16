@@ -42,7 +42,7 @@ def test_contract(case, tmp_path):
 
 def test_foreign_out_dir_refused(tmp_path):
     (tmp_path / "mine").mkdir()
-    (tmp_path / "mine" / "notes.txt").write_text("keep me")
+    (tmp_path / "mine" / "notes.txt").write_text("keep me", encoding="utf-8", newline="\n")
     r = run_vidx(AV, "-o", "mine", tmp_path=tmp_path)
     assert r.returncode == 1
     assert "was not made by vidx" in r.stderr
@@ -50,7 +50,7 @@ def test_foreign_out_dir_refused(tmp_path):
 
 
 def test_out_path_is_a_file(tmp_path):
-    (tmp_path / "f").write_text("x")
+    (tmp_path / "f").write_text("x", encoding="utf-8", newline="\n")
     r = run_vidx(AV, "-o", "f", tmp_path=tmp_path)
     assert r.returncode == 1
     assert "is not a directory" in r.stderr

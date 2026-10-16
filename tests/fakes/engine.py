@@ -2,7 +2,8 @@
 
 usage: engine.py <engine> <the real engine's arguments...>   (run in place of each engine: tests/fakes/hook.py)
 Waits VIDX_FAKE_DELAY seconds (its pid is in VIDX_FAKE_LOG.pids/ meanwhile), fails (exit 1, no
-output) if the engine is in VIDX_FAKE_FAIL, logs the call to VIDX_FAKE_LOG. Output:
+output) if the engine is in VIDX_FAKE_FAIL, logs the call as one file in the VIDX_FAKE_LOG directory (not
+lines appended to one file: with -j N fakes finish together, and Windows appends are not atomic). Output:
 VIDX_FAKE_DATA/<stem>.json if present, else one segment per clip (or for the whole audio) with the
 text "Fake <engine> <lang>."
 """
@@ -67,8 +68,10 @@ def main():
     time.sleep(0 if query else float(os.environ.get("VIDX_FAKE_DELAY", "0")))
     failed = engine in os.environ.get("VIDX_FAKE_FAIL", "").split(",")
     if os.environ.get("VIDX_FAKE_LOG"):
-        with open(os.environ["VIDX_FAKE_LOG"], "a", encoding="utf-8", newline="\n") as f:
-            f.write(json.dumps({"engine": engine, "args": args, "start": t0, "end": time.time()}) + "\n")
+        os.makedirs(os.environ["VIDX_FAKE_LOG"], exist_ok=True)
+        call = os.path.join(os.environ["VIDX_FAKE_LOG"], f"{time.time_ns()}-{os.getpid()}.json")
+        with open(call, "x", encoding="utf-8", newline="\n") as f:
+            json.dump({"engine": engine, "args": args, "start": t0, "end": time.time()}, f)
     if failed:
         sys.exit(f"fake {engine}: failing as asked (VIDX_FAKE_FAIL)")
     if engine in ("whisper", "turbo"):

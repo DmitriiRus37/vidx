@@ -201,7 +201,7 @@ def test_main_warns_when_a_pair_cannot_be_separated(tmp_path, monkeypatch, capsy
     monkeypatch.setattr(sys, "argv", ["regions.py", "turbo", "ru,uk", str(path), str(tmp_path / "r.json")])
     regions.main()
     assert "ru/uk could not be separated reliably" in capsys.readouterr().err
-    assert json.loads((tmp_path / "r.json").read_text())[0]["start"] == 0
+    assert json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))[0]["start"] == 0
 
 
 def test_pair_warnings_with_one_language():
@@ -227,7 +227,7 @@ def test_main_ignores_a_repeated_language(tmp_path, monkeypatch, arg):
     monkeypatch.setitem(sys.modules, "lid", sure_ru)
     monkeypatch.setattr(sys, "argv", ["regions.py", "turbo", arg, str(path), str(tmp_path / "r.json")])
     regions.main()
-    assert [r["lang"] for r in json.loads((tmp_path / "r.json").read_text())] == ["ru"]
+    assert [r["lang"] for r in json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))] == ["ru"]
 
 
 def test_one_loudness_measure_for_both_cutters():

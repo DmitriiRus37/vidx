@@ -102,3 +102,53 @@ def test_failed_list(tmp_path):
     out.add_failed("frames + OCR")
     assert out.failed() == ["GigaAM-v3 [ru]", "frames + OCR"]
     assert (tmp_path / "o" / ".vidx" / "failed").read_bytes() == b"GigaAM-v3 [ru]\nframes + OCR\n"
+
+
+def test_jobs_failing_together_are_all_listed(tmp_path, monkeypatch):
+    """With -j N, jobs fail in worker threads at the same moment. On Windows an append is a seek to the end and
+    then a write, so two appends at once land at the same offset and one label is lost (exit 0 instead of 3);
+    that append is emulated here, on every OS."""
+    import builtins
+    import threading
+    import time
+
+    from vidx import state
+
+    real_open = builtins.open
+
+    class SeekThenWrite:
+        def __init__(self, path, encoding):
+            self.path, self.encoding = path, encoding
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def write(self, text):
+            end = os.path.getsize(self.path)
+            time.sleep(0.05)  # the other threads find the same end meanwhile
+            with real_open(self.path, "r+b") as f:
+                f.seek(end)
+                f.write(text.encode(self.encoding))
+
+    def windows_open(path, mode="r", encoding=None, newline=None):
+        return SeekThenWrite(path, encoding) if "a" in mode else real_open(path, mode, encoding=encoding,
+                                                                             newline=newline)
+
+    out = OutDir.prepare(str(tmp_path / "o"), force=False)
+    out.reset_failed()
+    monkeypatch.setattr(state, "open", windows_open, raising=False)
+    start = threading.Barrier(4)
+
+    def fail(label):
+        start.wait()
+        out.add_failed(label)
+
+    threads = [threading.Thread(target=fail, args=(f"job{i}",)) for i in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sorted(out.failed()) == ["job0", "job1", "job2", "job3"]
