@@ -1,0 +1,19 @@
+{
+ "sentences": [
+  {
+   "start": 0.0,
+   "end": 2.8,
+   "text": " Heute sprechen wir über das Wetter am Wochenende."
+  },
+  {
+   "start": 2.8,
+   "end": 6.64,
+   "text": " Am Samstag wird es sonnig und warm, etwa 20 Grad."
+  },
+  {
+   "start": 6.64,
+   "end": 12.0,
+   "text": " Am Sonntag regnet es am Nachmittag, also nehmt einen Schirm und warme Kleidung mit."
+  }
+ ]
+}

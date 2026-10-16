@@ -2,8 +2,10 @@
 .venv/
 .venv-giga/
 models/
-lib/ocr
-lib/apple_asr
+bin/
+# binaries compiled by the bash version, before they moved to bin/
+src/vidx/lib/ocr
+src/vidx/lib/apple_asr
 __pycache__/
 *.pyc
 
@@ -21,3 +23,4 @@ glossaries/*
 .idea/
 .vscode/
 .ruff_cache/
+.pytest_cache/

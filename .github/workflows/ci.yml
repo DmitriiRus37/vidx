@@ -1,0 +1,60 @@
+# Unit and CLI tests with the fake engines on the three platforms (no models, no network besides installs).
+name: ci
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04, windows-2025]  # macos-15: arm64 (macos-14 is retired in Nov 2026)
+        python: ["3.11", "3.14"]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+      - name: ffmpeg (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+      - name: ffmpeg (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
+      - name: ffmpeg (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg -y --no-progress
+      - name: ruff
+        run: uvx ruff check src/ tests/
+      - name: launcher parses (POSIX sh)
+        if: runner.os != 'Windows'
+        run: sh -n vidx
+      - name: unit and CLI tests
+        run: uv run --isolated --group test --python ${{ matrix.python }} pytest -ra
+  latin-1:
+    # The whole suite in a Latin-1 locale with UTF-8 mode off: what Windows' code page does to text that names
+    # no encoding (files, program output, vidx's own stdout), on Linux, where the locale can be generated.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+      - name: ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+      - name: Latin-1 locale
+        run: sudo localedef -i en_US -f ISO-8859-1 en_US.ISO-8859-1
+      - name: unit and CLI tests in the Latin-1 locale
+        env:
+          LC_ALL: en_US.ISO-8859-1
+          LANG: en_US.ISO-8859-1
+          PYTHONUTF8: "0"
+        run: |
+          uv run --isolated --group test --python 3.14 python -c \
+            'import locale; e = locale.getpreferredencoding(False); print(e); assert e == "ISO-8859-1", e'
+          uv run --isolated --group test --python 3.14 pytest -ra

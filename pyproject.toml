@@ -1,0 +1,39 @@
+[project]
+name = "vidx"
+version = "0.2.0.dev0"
+description = "Extract pictures and text from a video file or a yt-dlp URL: local speech engines, OCR, one merged transcript"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+# The orchestrator needs only the standard library and psutil (process trees on Windows). The engines run
+# in their own environments, made by `vidx setup`.
+dependencies = ["psutil>=7"]
+
+[project.scripts]
+vidx = "vidx.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/DmitriiRus37/vidx"
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vidx"]
+
+[dependency-groups]
+# pinned like the helper venv (vidx HELPER_PKGS), so the tests run what vidx runs
+test = ["pytest==9.1.1", "numpy==2.4.6", "pillow==12.3.0", "markdown-it-py==4.2.0", "psutil==7.2.2"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "BLE", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-m 'not real'"
+markers = ["real: needs the real models (cached by `vidx setup`); run with -m real"]

@@ -1,0 +1,29 @@
+{
+ "sentences": [
+  {
+   "start": 0.0,
+   "end": 1.12,
+   "text": " Привіт усім."
+  },
+  {
+   "start": 1.12,
+   "end": 6.24,
+   "text": " Сьогодні коротко про погоду на вихідні та про те, що взяти з собою."
+  },
+  {
+   "start": 6.24,
+   "end": 9.28,
+   "text": " Now a quick summary in English for our friends abroad."
+  },
+  {
+   "start": 9.28,
+   "end": 11.36,
+   "text": " Saturday will be sunny and warm."
+  },
+  {
+   "start": 11.36,
+   "end": 15.92,
+   "text": " And zum Schluss auf Deutsch, am Sonntag regnet es, nehmt einen shill mit."
+  }
+ ]
+}

@@ -1,0 +1,74 @@
+"""GigaAM-v3 on long audio without pyannote: cut at the quietest 30 ms frame 14-22 s into each
+chunk, skip silent chunks, transcribe each one (GigaAM refuses audio longer than 25 s).
+
+usage: gigaam_run.py <audio.wav 16k mono> <out.json> [regions.json]
+regions.json (mixed-language runs): only the "ru" regions are transcribed, cut separately, so no
+chunk crosses a language switch (GigaAM turns English speech into Latin-letter gibberish).
+out.json: {"engine": "gigaam", "segments": [{"start", "end", "text"}]}
+Device: CUDA (NVIDIA), else MPS (Apple), else CPU; VIDX_GIGAAM_DEVICE=cuda|mps|cpu forces one.
+"""
+import json
+import os
+import sys
+import tempfile
+
+import numpy as np
+from common import pause_cuts, unix_stderr
+
+CHUNK_MIN_S, CHUNK_MAX_S = 14, 22  # GigaAM refuses audio longer than 25 s
+
+
+def device(torch):
+    forced = os.environ.get("VIDX_GIGAAM_DEVICE")
+    if forced:
+        return forced
+    if torch.cuda.is_available():
+        return "cuda"
+    mps = getattr(torch.backends, "mps", None)
+    return "mps" if mps is not None and mps.is_available() else "cpu"
+
+
+def main():
+    src, out = sys.argv[1], sys.argv[2]
+    name = "v3_e2e_rnnt"  # e2e = with punctuation
+    import gigaam
+    import soundfile as sf
+    import torch
+
+    model = gigaam.load_model(name, device=device(torch))
+    x, sr = sf.read(src, dtype="float32")
+    spans = [(0, len(x))]
+    if len(sys.argv) > 3:
+        with open(sys.argv[3], encoding="utf-8") as f:
+            spans = [(int(r["start"] * sr), min(len(x), int(r["end"] * sr))) for r in json.load(f) if r["lang"] == "ru"]
+    chunks = []
+    for s0, s1 in spans:
+        chunks += [(s0 + a, s0 + b) for a, b in pause_cuts(x[s0:s1], sr, CHUNK_MIN_S, CHUNK_MAX_S)]
+    res, spoken, failed = [], 0, 0
+    with tempfile.TemporaryDirectory() as td:
+        tmp = os.path.join(td, "c.wav")
+        for k, (a, c) in enumerate(chunks):
+            seg = x[a:c]
+            print(f"\r  gigaam {k + 1}/{len(chunks)}", end="", file=sys.stderr, flush=True)
+            if len(seg) < sr // 10 or np.sqrt((seg ** 2).mean()) < 1e-4:
+                continue
+            spoken += 1
+            sf.write(tmp, seg, sr)
+            try:
+                t = model.transcribe(tmp).text.strip()
+            except Exception as ex:  # noqa: BLE001 — one bad chunk (e.g. MPS out of memory) must not lose the rest
+                print(f"\n  gigaam chunk {a / sr:.1f}s: {ex}", file=sys.stderr)
+                failed += 1
+                continue
+            if t:
+                res.append({"start": round(a / sr, 2), "end": round(c / sr, 2), "text": t})
+    print(file=sys.stderr)
+    if spoken and failed == spoken:
+        sys.exit(f"gigaam: all {failed} chunks failed")  # no empty result that would be cached as done
+    with open(out, "w", encoding="utf-8", newline="\n") as f:
+        json.dump({"engine": "gigaam", "segments": res}, f, ensure_ascii=False, indent=0)
+
+
+if __name__ == "__main__":
+    unix_stderr()
+    main()
