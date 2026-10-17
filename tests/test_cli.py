@@ -471,3 +471,32 @@ def test_regions_redone_when_parakeet_snapping_appears_or_goes(tmp_path):
     assert regions_runs("whisper", "parakeet") == 2  # same options: cached
     assert regions_runs("whisper") == 3  # parakeet gone: unsnapped again
     assert "snap=none" in (tmp_path / "out" / ".vidx" / "regions.json.params").read_text(encoding="utf-8")
+
+
+def count_runs(tmp_path, *args, env=None):
+    r = run_vidx(FIXTURE, *args, "-o", "out", tmp_path=tmp_path, env=env)
+    assert r.returncode == 0, r.stderr
+    return [c["engine"] for c in fake_calls(tmp_path)]
+
+
+def test_another_language_id_model_redoes_detection_and_regions(tmp_path):
+    """lang.txt was stamped "detect" and regions.json "<langs> lid snap=...": a different language-ID model (or
+    parakeet model, for the snapping) kept the old result."""
+    auto = ("-e", "whisper", "--no-frames")
+    assert count_runs(tmp_path, *auto, env={"VIDX_FAKE_LANG": "ru,en"}).count("detect_lang") == 1
+    assert count_runs(tmp_path, *auto, env={"VIDX_FAKE_LANG": "ru,en"}).count("detect_lang") == 1  # cached
+    other = {"VIDX_FAKE_LANG": "ru,en", "VIDX_MODEL_TURBO": "another-turbo"}
+    calls = count_runs(tmp_path, *auto, env=other)
+    assert calls.count("detect_lang") == 2 and calls.count("regions") == 2
+    snapped = ("-l", "ru,en", "-e", "whisper,parakeet", "--no-frames")
+    assert count_runs(tmp_path, *snapped).count("regions") == 3
+    assert count_runs(tmp_path, *snapped).count("regions") == 3  # cached
+    assert count_runs(tmp_path, *snapped, env={"VIDX_MODEL_PARAKEET": "another-parakeet"}).count("regions") == 4
+
+
+def test_another_ocr_backend_redoes_the_ocr(tmp_path):
+    """The OCR stamp held only the languages: Apple Vision's ocr.jsonl was kept for a RapidOCR run and back."""
+    args = ("-l", "ru", "-e", "whisper")
+    assert count_runs(tmp_path, *args, env={"VIDX_FAKE_PLATFORM": "linux"}).count("ocr") == 1
+    assert count_runs(tmp_path, *args, env={"VIDX_FAKE_PLATFORM": "linux"}).count("ocr") == 1  # cached
+    assert count_runs(tmp_path, *args, env={"VIDX_FAKE_PLATFORM": "darwin"}).count("ocr") == 2

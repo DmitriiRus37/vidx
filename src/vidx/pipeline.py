@@ -269,14 +269,15 @@ class Run:
             log(f"duration: {d // 60}:{d % 60:02d}")
             if o.lang == "auto":
                 lang_txt = self.out.join("lang.txt")
-                if self.out.fresh(lang_txt, "detect"):
+                detect = f"detect {self.reg.lid.model}"  # the stamp names the model: another one detects again
+                if self.out.fresh(lang_txt, detect):
                     log("detecting language (10 s clips, 1 per minute, whisper turbo)")
                     tmp = self.out.join("lang.tmp")
                     if jobs.Context().call(self.reg.lid_argv("detect_lang", self.audio), stdout=tmp,
                                            drop=self.reg.lid.drop) != 0:
                         raise Fatal("language detection failed")
                     os.replace(tmp, lang_txt)
-                    self.out.stamp(lang_txt, "detect")
+                    self.out.stamp(lang_txt, detect)
                 with open(lang_txt, encoding="utf-8") as f:
                     langs = f.read().strip()
             else:
@@ -358,8 +359,9 @@ class Run:
                                  self.parakeet_job())
                     if os.path.isfile(self.asr("parakeet")) and os.path.getsize(self.asr("parakeet")):
                         region_args.append(self.asr("parakeet"))
-                        snap = "parakeet"
-            params = f"{','.join(self.langs)} lid snap={snap}"  # boundaries snapped to parakeet's sentences or not
+                        snap = f"parakeet {self.reg.get('parakeet').model}"
+            # the language-ID model, and the boundaries snapped to parakeet's sentences (which model) or not
+            params = f"{','.join(self.langs)} lid {self.reg.lid.model} snap={snap}"
             regions = self.out.join("regions.json")
             if self.out.fresh(regions, params):
                 log("splitting into language regions (whisper turbo language ID)")
@@ -478,11 +480,12 @@ class Run:
                     return False
             out.stamp(frames_json, fp)
         ocr_out = out.join("ocr", "ocr.jsonl")
-        if o.do_ocr and out.fresh(ocr_out, self.ocr_langs):
+        ocr = self.reg.get("ocr")
+        ocr_params = f"{ocr.model} {self.ocr_langs}"  # the backend too: Apple Vision and RapidOCR read differently
+        if o.do_ocr and out.fresh(ocr_out, ocr_params):
             if self.platform_needs_swift() and not self.rt.build_swift("ocr"):
                 return False
             files = sorted(glob.glob(glob.escape(out.join("frames", "unique")) + os.sep + "*.jpg"))
-            ocr = self.reg.get("ocr")
             ctx.say(f"OCR ({ocr.model}, {self.ocr_langs}) on {len(files)} frames")
             os.makedirs(out.join("ocr"), exist_ok=True)
             tmp = out.join("ocr", "ocr.tmp")
@@ -496,7 +499,7 @@ class Run:
                 if rc != 0:
                     return False
             os.replace(tmp, ocr_out)
-            out.stamp(ocr_out, self.ocr_langs)
+            out.stamp(ocr_out, ocr_params)
         return True
 
     def platform_needs_swift(self):

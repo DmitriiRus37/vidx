@@ -41,7 +41,8 @@ options, so:
 
 - an interrupted run resumes: steps that did not finish never wrote their stamp and run again;
 - changing an option reruns only the steps it affects (`--scene` redoes frames and OCR, `-l` redoes
-  the language-bound engines, `-g` redoes whisper);
+  the language-bound engines, `-g` redoes whisper), and so does another model or backend (`VIDX_MODEL_*`
+  redoes its engine; a new language-ID model redoes the detection and the regions; another OCR backend the OCR);
 - `-f` redoes everything, including the download.
 
 `.vidx/` also marks the folder as made by vidx: `-o` refuses a non-empty folder without it, so vidx
