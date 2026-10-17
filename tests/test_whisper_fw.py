@@ -33,27 +33,35 @@ class Segment:  # faster_whisper.transcribe.Segment, the fields vidx uses
 class StubModel:
     calls = []
     fail_on = None  # device whose model raises like a missing cuBLAS
+    fail_running_on = None  # same, but only when the model runs: CTranslate2 loads cuBLAS on the first inference
 
     def __init__(self, model, device, compute_type, **kw):
         if device == StubModel.fail_on:
             raise RuntimeError("Library cublas64_12.dll is not found or cannot be loaded")
         StubModel.calls.append(("load", model, device, compute_type))
+        self.device = device
         self.model = types.SimpleNamespace(is_multilingual=True)
 
+    def check_running(self):
+        if self.device == StubModel.fail_running_on:
+            raise RuntimeError("Library cublas64_12.dll is not found or cannot be loaded")
+
     def transcribe(self, audio, **kw):
+        self.check_running()
         StubModel.calls.append(("transcribe", type(audio).__name__, str(audio.dtype), kw))
         segs = [Segment(0, 0, 0.0, 1.5, " Добрый вечер.", [50365, 1], -0.2, 1.1, 0.01, None, 0.0),
                 Segment(1, 150, 1.5, 3.0, " Суп.", [50440, 2], -0.3, 1.0, 0.02, None, 0.0)]
         return iter(segs), types.SimpleNamespace(language=kw.get("language"), duration=3.0)
 
     def detect_language(self, audio, **kw):
+        self.check_running()
         StubModel.calls.append(("detect", len(audio), kw))
         return "en", 0.9, [("en", 0.9), ("de", 0.06), ("ru", 0.04)]
 
 
 @pytest.fixture
 def stub(monkeypatch):
-    StubModel.calls, StubModel.fail_on = [], None
+    StubModel.calls, StubModel.fail_on, StubModel.fail_running_on = [], None, None
     monkeypatch.setitem(sys.modules, "faster_whisper", types.SimpleNamespace(WhisperModel=StubModel))
     monkeypatch.setitem(sys.modules, "ctranslate2", types.SimpleNamespace(get_cuda_device_count=lambda: 0))
     return StubModel
@@ -133,3 +141,35 @@ def test_lid_uses_faster_whisper_without_mlx(stub, monkeypatch):
     probs = detect(np.zeros(16000 * 8, dtype=np.float32))
     assert probs == {"en": 0.9, "de": 0.06, "ru": 0.04}
     assert stub.calls[0][1] == "large-v3-turbo" and stub.calls[-1][2] == {"language_detection_segments": 1}
+
+
+def without_mlx(monkeypatch):
+    import importlib.util
+
+    real = importlib.util.find_spec
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name, *a: None if name == "mlx_whisper" else real(name, *a))
+
+
+@pytest.mark.parametrize("when", ["load", "inference"])
+def test_lid_falls_back_to_cpu_when_cuda_libraries_are_missing(stub, monkeypatch, capsys, when):
+    """Language ID had a CPU fallback only at load time, but CTranslate2 loads cuBLAS on the first inference: a
+    machine with a GPU and no CUDA libraries failed language detection. It now falls back like whisper_fw."""
+    import lid
+
+    without_mlx(monkeypatch)
+    monkeypatch.setitem(sys.modules, "ctranslate2", types.SimpleNamespace(get_cuda_device_count=lambda: 1))
+    setattr(stub, "fail_on" if when == "load" else "fail_running_on", "cuda")
+    detect = lid.load("large-v3-turbo")
+    assert detect(np.zeros(16000, dtype=np.float32)) == {"en": 0.9, "de": 0.06, "ru": 0.04}
+    assert detect(np.zeros(16000, dtype=np.float32))["en"] == 0.9  # stays on the CPU
+    assert [c[2:] for c in stub.calls if c[0] == "load"][-1] == ("cpu", "int8")
+    assert [c[0] for c in stub.calls].count("load") == (1 if when == "load" else 2)
+    assert "falling back to CPU" in capsys.readouterr().err
+
+
+def test_whisper_falls_back_when_cuda_fails_while_transcribing(tmp_path, stub, monkeypatch, capsys):
+    monkeypatch.setitem(sys.modules, "ctranslate2", types.SimpleNamespace(get_cuda_device_count=lambda: 1))
+    stub.fail_running_on = "cuda"
+    run([wav(tmp_path / "a.wav"), "--model", "tiny", "-o", tmp_path], monkeypatch)
+    assert [c[2:] for c in stub.calls if c[0] == "load"] == [("cuda", "float16"), ("cpu", "int8")]
+    assert (tmp_path / "a.json").exists() and "falling back to CPU" in capsys.readouterr().err
