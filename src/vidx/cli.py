@@ -1,7 +1,8 @@
 """vidx command line: help, find, setup and a run (the default command). Exit status: 0 all jobs succeeded,
-3 some jobs failed (the rest is merged anyway), 1 usage or setup error, 130 interrupted."""
+3 some jobs failed (the rest is merged anyway), 1 usage or setup error or an unexpected error, 130 interrupted."""
 import os
 import sys
+import traceback
 
 from vidx import jobs, log, paths, texts
 from vidx.options import APPLE_TIMEOUT_DEFAULT, ShowHelp, Usage, parse_run
@@ -33,12 +34,12 @@ def show(text):
 def find(args):
     """vidx find <out-dir> <regex> [source]: lib/find.py (standard library only) in the helper Python. Its
     hits (UTF-8) are printed by vidx, so a terminal or a redirect gets them as it gets vidx's messages."""
-    from vidx.pipeline import Runtime, capture
+    from vidx.pipeline import Runtime
 
     rt = Runtime()
     python = rt.helper_python if os.path.isfile(rt.helper_python) else sys.executable
     out, regex, *source = args  # the regex is text: UTF-8 in every locale (jobs.Text); the rest are file names
-    rc, hits = capture([python, str(paths.LIB / "find.py"), out, jobs.Text(regex), *source])
+    rc, hits = jobs.capture([python, str(paths.LIB / "find.py"), out, jobs.Text(regex), *source])
     sys.stdout.write(hits)
     sys.stdout.flush()
     return rc
@@ -94,10 +95,21 @@ def main(argv=None):
         return dispatch(args)
     except (Usage, log.Fatal) as e:
         log.error(str(e))
+        jobs.remove_temps()  # a job's Fatal with -j N: run_queue killed the other jobs' programs
         return 1
     except jobs.Interrupted:
-        jobs.kill_all()
-        log.warn("interrupted")
-        sys.stdout.flush()
-        sys.stderr.flush()
-        os._exit(130)  # worker threads may still be waiting on killed programs
+        log.warn("interrupted")  # first: the kill may take KILL_WAIT_S
+        return stop(130)
+    except Exception:  # noqa: BLE001 — a bug or the OS (disk full): no engine may outlive vidx
+        traceback.print_exc()
+        log.error("unexpected error (above); stopping every program vidx started")
+        return stop(1)
+
+
+def stop(code):
+    """Kill every running program tree and exit now: worker threads may still be waiting on killed programs."""
+    jobs.kill_all()
+    jobs.remove_temps()  # only now: the killed programs no longer hold files there
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)

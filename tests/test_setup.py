@@ -180,3 +180,105 @@ def test_device_script_names_a_device_from_any_directory(tmp_path):
     r = subprocess.run(setup.isolated(sys.executable, LIB / "device.py", "whisper"), cwd=tmp_path, capture_output=True,
                        text=True, encoding="utf-8", env={**os.environ, "VIDX_WHISPER_DEVICE": "cpu"}, timeout=60)
     assert (r.returncode, r.stdout) == (0, "cpu int8\n"), r.stderr
+
+
+def fake_uv(steps, venvs):
+    """What `uv pip` does to the packages of each venv ({venv: {name: version}}), as far as flavours go: a pin
+    without a local version (`torch==2.14.1`) is satisfied by any installed local build (`2.14.1+cpu`); a missing
+    package comes from the index (PyTorch's: a `+cpu` / `+cu126` build); --reinstall-package installs anew."""
+    for s in steps:
+        a = list(map(str, s.argv))
+        if a[:3] == ["uv", "pip", "uninstall"]:
+            venv = a[a.index("--python") + 1]
+            for name in a[a.index("--python") + 2:]:
+                venvs.setdefault(venv, {}).pop(name, None)
+        elif a[:3] == ["uv", "pip", "install"]:
+            venv = a[a.index("--python") + 1]
+            index = a[a.index("--index-url") + 1] if "--index-url" in a else ""
+            again = {a[i + 1] for i, x in enumerate(a) if x == "--reinstall-package"}
+            for req in (x for x in a[3:] if "==" in x or ">=" in x):
+                name, _, version = req.partition("==") if "==" in req else (req.split(">=")[0], "", "1.26.0")
+                have = venvs.setdefault(venv, {}).get(name)
+                if have and name not in again and ("+" in version and have == version
+                                                   or "+" not in version and have.split("+")[0] == version):
+                    continue
+                local = index.rsplit("/", 1)[-1] if "download.pytorch.org" in index else ""
+                venvs[venv][name] = version if "+" in version or not local else f"{version}+{local}"
+
+
+def test_a_gpu_change_replaces_torch_and_onnxruntime(tmp_path):
+    """vidx setup after an NVIDIA GPU appeared (or went): `torch==2.14.1` was satisfied by the 2.14.1+cpu already
+    there, so torch stayed a CPU build; and onnxruntime-gpu was installed next to onnxruntime in one venv (both
+    own the onnxruntime module). The builds are now pinned with their local version, and the other onnxruntime
+    flavours are removed first."""
+    venvs = {}
+    fake_uv(plan("linux", home=str(tmp_path)).steps, venvs)
+    onnx, giga = os.path.join(str(tmp_path), ".venv-onnx"), os.path.join(str(tmp_path), ".venv-giga")
+    assert venvs[giga]["torch"] == "2.14.1+cpu" and venvs[giga]["torchaudio"] == "2.11.0+cpu"
+    fake_uv(plan("linux", home=str(tmp_path), gpus=["NVIDIA T4"]).steps, venvs)
+    assert venvs[giga]["torch"] == "2.14.1+cu126" and venvs[giga]["torchaudio"] == "2.11.0+cu126"
+    assert [p for p in venvs[onnx] if p.startswith("onnxruntime")] == ["onnxruntime-gpu"]
+    fake_uv(plan("win32", home=str(tmp_path), gpu="directml").steps, venvs)
+    assert [p for p in venvs[onnx] if p.startswith("onnxruntime")] == ["onnxruntime-directml"]
+    fake_uv(plan("linux", home=str(tmp_path)).steps, venvs)
+    assert venvs[giga]["torch"] == "2.14.1+cpu"
+    assert [p for p in venvs[onnx] if p.startswith("onnxruntime")] == ["onnxruntime"]
+
+
+def test_macos_torch_has_no_local_version():
+    cmds = commands(plan("darwin"))
+    assert any("torch==2.14.1 " in c + " " for c in cmds) and not any("+cpu" in c for c in cmds)
+
+
+class FakeRuntime:
+    def __init__(self, swift=True, vosk=True):
+        self.platform, self.home, self.swift, self.vosk = "darwin", "/h", swift, vosk
+        self.registry = types.SimpleNamespace(bin="/h/bin", models="/h/models")
+
+    def build_swift(self, name):
+        return self.swift
+
+    def fetch_vosk(self, name):
+        return self.vosk
+
+
+@pytest.mark.parametrize("rt, why", [(FakeRuntime(swift=False), "could not compile the Swift helper ocr"),
+                                     (FakeRuntime(vosk=False), "could not download the Vosk model vosk-model-ru-0.42")])
+def test_setup_fails_when_a_helper_or_model_is_missing(monkeypatch, capsys, rt, why):
+    """A failed Swift build or Vosk download was ignored: vidx setup said "setup done" and exited 0, and the runs
+    then lacked OCR or Vosk."""
+    from vidx import cli, pipeline
+
+    steps = [setup.Step("swift", ["ocr"]), setup.Step("vosk", ["vosk-model-ru-0.42"])]
+    fake_plan = types.SimpleNamespace(steps=steps, missing=[], gpus=[], device_probes=lambda: [], platform="darwin")
+    monkeypatch.setattr(setup, "Plan", lambda *a, **k: fake_plan)
+    monkeypatch.setattr(pipeline, "Runtime", lambda: rt)
+    monkeypatch.setattr(setup.jobs, "install_interrupt_handlers", lambda: None)
+    assert cli.main(["setup"]) == 1
+    out, err = capsys.readouterr()
+    assert why in err and "setup done" not in err + out
+
+
+def test_setup_runs_its_programs_by_full_path(monkeypatch):
+    """uv, ffmpeg (warm-up) and the rest are looked up in PATH by vidx (paths.which: on Windows not in the current
+    directory) and started by that path; one that is not there stops setup."""
+    ran = []
+    monkeypatch.setattr(setup.paths, "which", lambda name, *a: {"uv": "/opt/uv/uv"}.get(name))
+    monkeypatch.setattr(setup.jobs.Context, "call", lambda self, argv, **k: ran.append(argv) or 0)
+    steps = [setup.Step("pip", ["uv", "pip", "install", "x"]), setup.Step("warm", ["ffmpeg", "-i", "x"])]
+    with pytest.raises(setup.Fatal, match="ffmpeg not found in PATH"):
+        setup.execute(types.SimpleNamespace(steps=steps), FakeRuntime())
+    assert ran == [["/opt/uv/uv", "pip", "install", "x"]]
+
+
+def test_runs_find_their_tools_by_full_path(monkeypatch):
+    from vidx import pipeline
+
+    monkeypatch.setattr(pipeline.paths, "which", lambda name, *a: f"/opt/{name}")
+    assert pipeline.Runtime(env={}).which("ffmpeg") == "/opt/ffmpeg"
+
+
+def test_no_nvidia_smi_in_path_means_no_gpu(monkeypatch):
+    monkeypatch.setattr(setup.paths, "which", lambda name, *a: None)
+    monkeypatch.setattr(setup.jobs, "output", lambda *a, **k: pytest.fail("ran a bare nvidia-smi"))
+    assert setup.nvidia_gpus() == []

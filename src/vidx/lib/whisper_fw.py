@@ -46,19 +46,34 @@ def devices():
     return ([("cuda", "float16")] if cuda else []) + [("cpu", "int8")]
 
 
+class Model:
+    """A faster-whisper model on the best device that works. CTranslate2 loads the CUDA libraries (cuBLAS, cuDNN)
+    when the model first runs, not when it is created, so a failure at either point moves it to the CPU, for the
+    rest of the process. Used by whisper (here) and language ID (lid.py)."""
+
+    def __init__(self, model_id):
+        self.model_id, self.options, self.model = model_id, devices(), None
+
+    def run(self, fn):
+        """fn(WhisperModel) on the current device; a CUDA failure retries it on the CPU."""
+        from faster_whisper import WhisperModel
+
+        while True:
+            device, compute = self.options[0]
+            try:
+                if self.model is None:
+                    self.model = WhisperModel(self.model_id, device=device, compute_type=compute)
+                return fn(self.model)
+            except RuntimeError as e:
+                if len(self.options) == 1:
+                    raise
+                print(f"  whisper: {device} failed ({e}); falling back to CPU", file=sys.stderr)
+                self.options, self.model = self.options[1:], None
+
+
 def run_model(model_id, run):
     """run(model) on the best device; a CUDA failure (missing libraries) falls back to the CPU."""
-    from faster_whisper import WhisperModel
-
-    options = devices()
-    for i, (device, compute) in enumerate(options):
-        try:
-            return run(WhisperModel(model_id, device=device, compute_type=compute))
-        except RuntimeError as e:
-            if i + 1 == len(options):
-                raise
-            print(f"  whisper: {device} failed ({e}); falling back to CPU", file=sys.stderr)
-    return None
+    return Model(model_id).run(run)
 
 
 def to_mlx_json(segments, language):

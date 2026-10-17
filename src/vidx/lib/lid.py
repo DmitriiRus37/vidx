@@ -29,17 +29,13 @@ def load(model):
 
 
 def load_faster_whisper(model):
-    from faster_whisper import WhisperModel
-    from whisper_fw import devices
+    from whisper_fw import Model
 
-    device, compute = devices()[0]
-    try:
-        m = WhisperModel(model, device=device, compute_type=compute)
-    except RuntimeError:  # CUDA libraries missing: the CPU always works
-        m = WhisperModel(model, device="cpu", compute_type="int8")
+    m = Model(model)  # CUDA, else (no GPU, or its libraries missing at load or at the first clip) the CPU
+    m.run(lambda _: None)  # load it now (vidx setup: download and cache)
 
     def detect(clip):
-        _, _, probs = m.detect_language(clip, language_detection_segments=1)
+        _, _, probs = m.run(lambda w: w.detect_language(clip, language_detection_segments=1))
         return dict(probs)
 
     return detect

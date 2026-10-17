@@ -14,6 +14,12 @@ from vidx.log import Fatal, warn
 _failed_lock = threading.Lock()  # -j N: jobs fail in worker threads; a Windows append is not atomic
 
 
+def printable(name):
+    """A file name for a message: the bytes of a name that is not UTF-8 shown as U+FFFD, not as surrogates that a
+    strict stream cannot write."""
+    return name.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
+
+
 class OutDir:
     def __init__(self, path, force):
         self.path, self.force = path, force
@@ -51,17 +57,18 @@ class OutDir:
             f.write(params)
 
     def same_input(self, value):
-        """Remember what this folder was made from; a different input means starting over."""
+        """Remember what this folder was made from; a different input means starting over. A file name that is not
+        UTF-8 (Linux: Latin-1 bytes, which Python gives as surrogates) is stored as its own bytes."""
         marker = self.join(".vidx", "input")
         try:
-            with open(marker, encoding="utf-8", newline="") as f:
+            with open(marker, encoding="utf-8", errors="surrogateescape", newline="") as f:
                 prev = f.read()
         except OSError:
             prev = ""
         if prev and prev != value:
-            warn(f"input changed ({prev} → {value}): redoing everything")
+            warn(f"input changed ({printable(prev)} → {printable(value)}): redoing everything")
             self.force = True
-        with open(marker, "w", encoding="utf-8", newline="") as f:
+        with open(marker, "w", encoding="utf-8", errors="surrogateescape", newline="") as f:
             f.write(value)
 
     def find_source(self):

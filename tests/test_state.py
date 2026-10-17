@@ -152,3 +152,16 @@ def test_jobs_failing_together_are_all_listed(tmp_path, monkeypatch):
     for t in threads:
         t.join()
     assert sorted(out.failed()) == ["job0", "job1", "job2", "job3"]
+
+
+def test_an_undecodable_input_name_is_remembered(tmp_path, capsys):
+    """Linux, UTF-8 locale, a file name in Latin-1 bytes: Python gives it as "caf\\udce9.mp4" (os.fsdecode, the
+    surrogateescape of the undecodable byte), which a strict UTF-8 write of .vidx/input could not store."""
+    name = os.path.join(str(tmp_path), b"caf\xe9.mp4".decode("utf-8", "surrogateescape"))  # os.fsdecode on Linux
+    out = OutDir.prepare(str(tmp_path / "o"), force=False)
+    out.same_input(name)
+    assert (tmp_path / "o" / ".vidx" / "input").read_bytes().endswith(b"caf\xe9.mp4")  # the name's own bytes
+    out.same_input(name)
+    assert not out.force and "input changed" not in capsys.readouterr().err
+    out.same_input(os.path.join(str(tmp_path), "other.mp4"))
+    assert out.force and "input changed" in capsys.readouterr().err

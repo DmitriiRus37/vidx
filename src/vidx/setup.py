@@ -4,7 +4,8 @@ Per platform: checks the tools vidx runs (ffmpeg, ffprobe, deno, uv) and prints 
 missing one (it never runs a package manager: they need sudo or an elevated prompt, and differ by distro);
 creates the environments with uv; compiles the Swift helpers (macOS); downloads the Russian Vosk model and
 warms the model caches; reports the device each engine will use. Re-running is safe: existing venvs are kept
-(delete one to rebuild it), packages are re-checked.
+(delete one to rebuild it), packages are re-checked, and after a GPU change (or --gpu) the torch and onnxruntime
+builds are replaced.
 
   darwin       uv tools mlx-whisper, parakeet-mlx, yt-dlp; .venv; .venv-giga (MPS); Swift ocr + apple_asr
   linux/win32  uv tool yt-dlp; .venv; .venv-giga; .venv-whisper (faster-whisper, RapidOCR); .venv-onnx (onnx-asr)
@@ -14,7 +15,6 @@ Windows, DirectML for parakeet only with --gpu directml (a VM may have no Direct
 """
 import os
 import shlex
-import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
@@ -38,18 +38,20 @@ class Step:
 
 def nvidia_gpus():
     """Names of the NVIDIA GPUs the driver sees ([] without nvidia-smi)."""
+    smi = paths.which("nvidia-smi")  # Windows: PATH only, not the current directory
+    if not smi:
+        return []
     try:
-        r = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"], capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=20)
+        rc, out, _ = jobs.output([smi, "--query-gpu=name", "--format=csv,noheader"], timeout=20)
     except (OSError, subprocess.SubprocessError):
         return []
-    return [x.strip() for x in r.stdout.splitlines() if x.strip()] if r.returncode == 0 else []
+    return [x.strip() for x in out.splitlines() if x.strip()] if rc == 0 else []
 
 
 class Plan:
     """Everything setup would do on a platform, as data (so --dry-run and the tests see it)."""
 
-    def __init__(self, platform, home, which=shutil.which, gpus=None, gpu="auto", env=None, registry=None,
+    def __init__(self, platform, home, which=paths.which, gpus=None, gpu="auto", env=None, registry=None,
                  models=True):
         self.platform, self.home, self.which, self.env = platform, home, which, os.environ if env is None else env
         self.gpus = nvidia_gpus() if gpus is None else gpus
@@ -113,12 +115,21 @@ class Plan:
                 s.append(Step("pip", ["uv", "pip", "install", "-q", "--python", self.venv(name), *index_args, *pkgs]))
 
         env(".venv", py, (install.HELPER_PKGS, None))
-        env(".venv-giga", py_giga, (install.TORCH, None if darwin else install.TORCH_INDEX[self.torch]),
-            (install.GIGA_PKGS, None))
-        if not darwin:
-            env(".venv-whisper", py_eng, (install.WHISPER_PKGS, None))
-            env(".venv-onnx", py_eng, (install.ONNX_PKGS + [install.ONNXRUNTIME[self.onnx]], None))
+        if darwin:
+            env(".venv-giga", py_giga, (install.TORCH, None), (install.GIGA_PKGS, None))
         else:
+            env(".venv-giga", py_giga, (install.torch_pins(self.torch), install.TORCH_INDEX[self.torch]),
+                (install.GIGA_PKGS, None))
+            env(".venv-whisper", py_eng, (install.WHISPER_PKGS, None))
+            # another GPU, another onnxruntime: the other flavours go first, and this one is reinstalled, as
+            # removing them also removed the files of the onnxruntime module they shared with it
+            ort = install.ONNXRUNTIME_PACKAGES[self.onnx]
+            others = [p for p in install.ONNXRUNTIME_PACKAGES.values() if p != ort]
+            env(".venv-onnx", py_eng)
+            s.append(Step("pip", ["uv", "pip", "uninstall", "-q", "--python", self.venv(".venv-onnx"), *others]))
+            s.append(Step("pip", ["uv", "pip", "install", "-q", "--python", self.venv(".venv-onnx"),
+                                  "--reinstall-package", ort, *install.ONNX_PKGS, install.ONNXRUNTIME[self.onnx]]))
+        if darwin:
             s += [Step("swift", ["ocr"]), Step("swift", ["apple_asr"])]
         if models:
             s.append(Step("vosk", ["vosk-model-ru-0.42"]))
@@ -245,14 +256,21 @@ def execute(plan, rt):
             if step.kind == "swift":
                 if step.argv[0] == "ocr":
                     log("compiling Swift helpers (Vision OCR, SpeechTranscriber)")
-                rt.build_swift(step.argv[0])
+                if not rt.build_swift(step.argv[0]):  # it has said why (no swiftc, a compile error)
+                    raise Fatal(f"setup failed: could not compile the Swift helper {step.argv[0]}")
                 continue
             if step.kind == "vosk":
-                rt.fetch_vosk(step.argv[0])
+                if not rt.fetch_vosk(step.argv[0]):  # it has said why
+                    raise Fatal(f"setup failed: could not download the Vosk model {step.argv[0]}")
                 continue
             argv = argv_of(step, tmp)
             if argv is None:
                 continue
+            if not os.path.isabs(argv[0]):  # uv, ffmpeg, mlx_whisper: run by full path (Windows: not the cwd's)
+                found = paths.which(argv[0])
+                if not found:
+                    raise Fatal(f"setup failed: {argv[0]} not found in PATH")
+                argv[0] = found
             if step.kind == "warm" and step.what:
                 log(f"warming the model cache: {step.what}")
             log(show(Step(step.kind, argv)))
@@ -263,11 +281,10 @@ def execute(plan, rt):
 def report_devices(plan):
     for name, argv in plan.device_probes():
         try:
-            r = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                               timeout=PROBE_TIMEOUT_S)
-            why = (r.stderr.strip().splitlines() or ["?"])[-1]
-            dev = r.stdout.strip() if r.returncode == 0 else f"unknown ({why})"
-        except subprocess.TimeoutExpired:  # killed by run(); the report and the other probes go on
+            rc, out, err = jobs.output(argv, timeout=PROBE_TIMEOUT_S)
+            why = (err.strip().splitlines() or ["?"])[-1]
+            dev = out.strip() if rc == 0 else f"unknown ({why})"
+        except subprocess.TimeoutExpired:  # killed by jobs.output; the report and the other probes go on
             dev = f"unknown (timed out after {PROBE_TIMEOUT_S} s)"
         except OSError as e:
             dev = f"unknown ({e})"

@@ -53,17 +53,24 @@ def test_option_change_reruns_only_affected_steps(tmp_path):
     assert run_vidx(FIXTURE, "-l", "ru", "-o", "out", "-g", gl, tmp_path=tmp_path).returncode == 0
     calls = fake_calls(tmp_path)[n:]
     assert sorted(c["engine"] for c in calls) == ["turbo", "whisper"]
-    assert all("Деплой" in c["args"] for c in calls)  # also in a Latin-1 locale (jobs.os_arg)
+    assert all(prompt_of(c["args"]) == "Деплой" for c in calls)  # also in a Latin-1 locale (jobs.os_arg)
 
 
-@pytest.mark.parametrize("word", ["Деплой", "café"])
+def prompt_of(args):
+    """The prompt whisper got: one argument, --initial-prompt=<prompt>."""
+    (prompt,) = [a.split("=", 1)[1] for a in args if a.startswith("--initial-prompt=")]
+    return prompt
+
+
+@pytest.mark.parametrize("word", ["Деплой", "café", "-Kubernetes"])
 def test_the_glossary_prompt_reaches_whisper_as_written(tmp_path, word):
-    """Also in a Latin-1 locale (ci latin-1): Cyrillic it cannot encode, é it can, and both must arrive as UTF-8."""
+    """Also in a Latin-1 locale (ci latin-1): Cyrillic it cannot encode, é it can, and both must arrive as UTF-8.
+    A prompt that starts with "-" is not taken for an option: it goes as --initial-prompt=<prompt>."""
     gl = tmp_path / "g.txt"
     gl.write_text(f"prompt: {word}\n", encoding="utf-8", newline="\n")
     r = run_vidx(FIXTURE, "-l", "ru", "-o", "out", "-e", "whisper", "--no-frames", "-g", gl, tmp_path=tmp_path)
     assert r.returncode == 0, r.stderr
-    assert [c["args"][c["args"].index("--initial-prompt") + 1] for c in fake_calls(tmp_path)] == [word]
+    assert [prompt_of(c["args"]) for c in fake_calls(tmp_path)] == [word]
 
 
 def test_interrupted_job_reruns(tmp_path):
@@ -122,6 +129,95 @@ def test_ctrl_c_stops_everything(tmp_path, jobs):
     for f in pids.iterdir():
         with pytest.raises(ProcessLookupError):
             os.kill(int(f.name), 0)
+
+
+def start_vidx_posix(tmp_path, jobs, env):
+    """vidx in its own session with SIGINT at its default (see test_ctrl_c_stops_everything); waits until `jobs`
+    fake engines run. → (process, pid directory)."""
+    import signal
+    import subprocess
+    import time
+
+    from helpers import VIDX_CMD, vidx_env
+
+    p = subprocess.Popen([*VIDX_CMD, str(FIXTURE), "-l", "ru", "-o", "out", "-j", str(jobs)], cwd=tmp_path,
+                         env=vidx_env(tmp_path, {"VIDX_FAKE_DELAY": "60", **env}), start_new_session=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                         preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
+    pids = tmp_path / "fake-calls.pids"
+    deadline = time.time() + 30
+    while not (pids.exists() and len(list(pids.iterdir())) >= jobs) and time.time() < deadline:
+        time.sleep(0.1)
+    assert pids.exists(), "no fake engine started"
+    return p, pids
+
+
+def kill_leftovers(p, pids):
+    """A failed test must not leave vidx or a fake engine (in its own session) running."""
+    import contextlib
+    import os
+    import signal
+
+    with contextlib.suppress(OSError):
+        os.killpg(p.pid, signal.SIGKILL)
+    for f in pids.iterdir() if pids.exists() else []:
+        with contextlib.suppress(OSError):
+            os.killpg(int(f.name), signal.SIGKILL)
+    p.wait(timeout=10)
+
+
+def all_gone(pids):
+    import os
+
+    gone = []
+    for f in pids.iterdir():
+        try:
+            os.kill(int(f.name), 0)
+        except ProcessLookupError:
+            gone.append(f.name)
+    return len(gone) == len(list(pids.iterdir()))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+@pytest.mark.parametrize("jobs", [1, 2])
+def test_a_second_ctrl_c_does_not_stop_the_shutdown(tmp_path, jobs):
+    """Ctrl-C pressed again while vidx kills the engines (an engine that ignores SIGTERM keeps it waiting
+    KILL_WAIT_S) used to raise inside the kill: a traceback, exit 1, and the engine never got its SIGKILL."""
+    import os
+    import signal
+    import time
+
+    p, pids = start_vidx_posix(tmp_path, jobs, {"VIDX_FAKE_IGNORE_TERM": "1"})
+    try:
+        os.killpg(p.pid, signal.SIGINT)
+        time.sleep(1)  # inside kill_all's wait for the engines that ignore SIGTERM
+        os.kill(p.pid, signal.SIGINT)
+        _, err = p.communicate(timeout=15)
+        assert p.returncode == 130, err
+        assert "Traceback" not in err and err.count("interrupted") == 1
+        time.sleep(0.5)
+        assert all_gone(pids)
+    finally:
+        kill_leftovers(p, pids)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+def test_closing_the_terminal_stops_everything(tmp_path):
+    """SIGHUP (the terminal closed) reaches vidx only: the engines run in sessions of their own, so vidx must kill
+    them, as on Ctrl-C."""
+    import os
+    import signal
+    import time
+
+    p, pids = start_vidx_posix(tmp_path, 2, {})
+    try:
+        os.kill(p.pid, signal.SIGHUP)
+        _, err = p.communicate(timeout=15)
+        assert p.returncode == 130, err
+        time.sleep(0.5)
+        assert all_gone(pids)
+    finally:
+        kill_leftovers(p, pids)
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows console events")
@@ -382,3 +478,32 @@ def test_regions_redone_when_parakeet_snapping_appears_or_goes(tmp_path):
     assert regions_runs("whisper", "parakeet") == 2  # same options: cached
     assert regions_runs("whisper") == 3  # parakeet gone: unsnapped again
     assert "snap=none" in (tmp_path / "out" / ".vidx" / "regions.json.params").read_text(encoding="utf-8")
+
+
+def count_runs(tmp_path, *args, env=None):
+    r = run_vidx(FIXTURE, *args, "-o", "out", tmp_path=tmp_path, env=env)
+    assert r.returncode == 0, r.stderr
+    return [c["engine"] for c in fake_calls(tmp_path)]
+
+
+def test_another_language_id_model_redoes_detection_and_regions(tmp_path):
+    """lang.txt was stamped "detect" and regions.json "<langs> lid snap=...": a different language-ID model (or
+    parakeet model, for the snapping) kept the old result."""
+    auto = ("-e", "whisper", "--no-frames")
+    assert count_runs(tmp_path, *auto, env={"VIDX_FAKE_LANG": "ru,en"}).count("detect_lang") == 1
+    assert count_runs(tmp_path, *auto, env={"VIDX_FAKE_LANG": "ru,en"}).count("detect_lang") == 1  # cached
+    other = {"VIDX_FAKE_LANG": "ru,en", "VIDX_MODEL_TURBO": "another-turbo"}
+    calls = count_runs(tmp_path, *auto, env=other)
+    assert calls.count("detect_lang") == 2 and calls.count("regions") == 2
+    snapped = ("-l", "ru,en", "-e", "whisper,parakeet", "--no-frames")
+    assert count_runs(tmp_path, *snapped).count("regions") == 3
+    assert count_runs(tmp_path, *snapped).count("regions") == 3  # cached
+    assert count_runs(tmp_path, *snapped, env={"VIDX_MODEL_PARAKEET": "another-parakeet"}).count("regions") == 4
+
+
+def test_another_ocr_backend_redoes_the_ocr(tmp_path):
+    """The OCR stamp held only the languages: Apple Vision's ocr.jsonl was kept for a RapidOCR run and back."""
+    args = ("-l", "ru", "-e", "whisper")
+    assert count_runs(tmp_path, *args, env={"VIDX_FAKE_PLATFORM": "linux"}).count("ocr") == 1
+    assert count_runs(tmp_path, *args, env={"VIDX_FAKE_PLATFORM": "linux"}).count("ocr") == 1  # cached
+    assert count_runs(tmp_path, *args, env={"VIDX_FAKE_PLATFORM": "darwin"}).count("ocr") == 2

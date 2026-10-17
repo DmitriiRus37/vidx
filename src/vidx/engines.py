@@ -18,10 +18,9 @@ Output stems and JSON shapes are the same everywhere, so merge.py does not know 
 tests/fakes/hook.py swaps every program for tests/fakes/engine.py.
 """
 import os
-import subprocess
 from dataclasses import dataclass, field
 
-from vidx import paths
+from vidx import jobs, paths
 
 ENGINES = ("whisper", "parakeet", "gigaam", "turbo", "apple", "vosk")  # vidx -e names, help order
 
@@ -112,9 +111,8 @@ class Registry:
     def uv_tool_dir(self):
         if self._uv_tool_dir is None:
             try:
-                r = subprocess.run(["uv", "tool", "dir"], capture_output=True, text=True, encoding="utf-8",
-                                   errors="replace")
-                self._uv_tool_dir = r.stdout.strip()
+                _, out, _ = jobs.output([paths.which("uv") or "uv", "tool", "dir"])
+                self._uv_tool_dir = out.strip()
             except OSError:  # no uv: vidx setup says how to install it
                 self._uv_tool_dir = ""
         return self._uv_tool_dir

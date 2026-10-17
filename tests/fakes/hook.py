@@ -10,6 +10,7 @@ stamps, job queue, ffmpeg, frames.py, merge) runs for real. Environment:
   VIDX_FAKE_DATA     dir with canned <output stem>.json / regions.json to return instead of stubs
   VIDX_FAKE_APPLE_LOCALES  locales the fake apple_asr --locales lists
   VIDX_FAKE_APPLE_EXIT     exit status of the fake apple_asr (4 = model download timed out)
+  VIDX_FAKE_IGNORE_TERM    1: the fakes ignore SIGTERM (POSIX), so only the SIGKILL after KILL_WAIT_S stops them
 """
 import sys
 from pathlib import Path

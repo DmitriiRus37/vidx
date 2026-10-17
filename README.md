@@ -41,7 +41,8 @@ options, so:
 
 - an interrupted run resumes: steps that did not finish never wrote their stamp and run again;
 - changing an option reruns only the steps it affects (`--scene` redoes frames and OCR, `-l` redoes
-  the language-bound engines, `-g` redoes whisper);
+  the language-bound engines, `-g` redoes whisper), and so does another model or backend (`VIDX_MODEL_*`
+  redoes its engine; a new language-ID model redoes the detection and the regions; another OCR backend the OCR);
 - `-f` redoes everything, including the download.
 
 `.vidx/` also marks the folder as made by vidx: `-o` refuses a non-empty folder without it, so vidx
@@ -152,8 +153,9 @@ ordered so GPU and CPU work interleave: whisper (GPU) · vosk (CPU) · frames + 
 parakeet · apple · turbo. So `-j 2` already overlaps the slowest GPU and CPU jobs, and `-j 3` adds
 the frames. With `-j > 1` each job's output goes to `logs/<job>.log` and the terminal only shows
 start / done / failure (with the last lines of the log). In mixed runs parakeet and the region split
-run before the queue, because GigaAM and whisper need the regions. Ctrl-C (Ctrl-Break on Windows) stops
-every running job together with the processes it started.
+run before the queue, because GigaAM and whisper need the regions. Ctrl-C (Ctrl-Break on Windows), closing
+the terminal (macOS, Linux) or an unexpected error stops every running job together with the processes it
+started; a second Ctrl-C while vidx stops them is ignored.
 
 A failed job does not stop the run: the rest is merged, the failures are listed at the end and vidx
 exits with status 3.
@@ -376,7 +378,8 @@ what it would do; `--no-models` skips the model downloads; `--gpu cuda|directml|
 choice (default: CUDA builds when `nvidia-smi` finds an NVIDIA GPU).
 
 What `vidx setup` installs (re-running it is safe; existing venvs are kept, a venv whose Python is gone
-is rebuilt; delete one to rebuild it):
+is rebuilt; delete one to rebuild it; after a GPU change or another `--gpu` the torch and onnxruntime builds
+are replaced):
 
 | Where | macOS | Linux, Windows |
 |---|---|---|
@@ -399,7 +402,8 @@ onnxruntime, which would overwrite the GPU one. `VIDX_PYTHON`, `VIDX_PYTHON_GIGA
 
 **NVIDIA GPU on Linux and Windows.** faster-whisper needs the CUDA 12 runtime with cuBLAS (Linux: the
 CUDA toolkit or the `nvidia-cublas-cu12` package; Windows: the CUDA 12 toolkit, or the cuBLAS DLLs on
-`PATH`); without them it says so and runs on the CPU. torch and onnxruntime-gpu bring their own CUDA
+`PATH`); without them it says so (`vidx setup` too, in its device report) and runs on the CPU, language ID
+included. torch and onnxruntime-gpu bring their own CUDA
 libraries. `VIDX_WHISPER_DEVICE`, `VIDX_ONNX_PROVIDER` and `VIDX_GIGAAM_DEVICE` force a device.
 
 Models are downloaded from their publishers and come under their own licenses; check them before
@@ -417,7 +421,7 @@ Tests are written first (TDD) and need no models by default:
 uv run --isolated --group test pytest                       # unit + CLI tests, ~1.5 min, no models or network
 uv run --isolated --group test --python 3.11 pytest         # the oldest supported Python
 HF_HUB_OFFLINE=1 uv run --isolated --group test pytest -m real   # real models (after vidx setup)
-uvx ruff check src/ tests/
+uvx ruff@0.16.10 check src/ tests/
 sh -n vidx                                                  # the POSIX launcher
 ```
 

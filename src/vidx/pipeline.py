@@ -6,13 +6,10 @@ registry (vidx.engines), so the same code runs on macOS, Linux and Windows.
 """
 import glob
 import importlib.util
-import io
 import json
 import os
 import re
 import shutil
-import subprocess
-import sys
 import tempfile
 import urllib.request
 import zipfile
@@ -24,6 +21,7 @@ from vidx.options import LANG_RE
 from vidx.state import OutDir
 
 VOSK_URL = "https://alphacephei.com/vosk/models/"
+DOWNLOAD_TIMEOUT_S = 60  # a server silent this long (to connect, or between two reads) fails the download
 ARG_CHARS = 24000  # Windows command lines are limited to 32767 characters: OCR runs in batches below this
 
 
@@ -64,18 +62,19 @@ class Runtime:
         return self.registry.helper_python
 
     def which(self, tool):
-        return shutil.which(tool)
+        return paths.which(tool)  # Windows: PATH only, not the current directory
 
     def build_swift(self, name):
         """name → <home>/bin/<name>, rebuilt when the .swift source is newer (macOS only)."""
         exe, src = os.path.join(self.registry.bin, name), paths.LIB / f"{name}.swift"
         if os.access(exe, os.X_OK) and os.path.getmtime(exe) > os.path.getmtime(src):
             return True
-        if not shutil.which("swiftc"):
+        swiftc = paths.which("swiftc")
+        if not swiftc:
             warn(f"swiftc not found (xcode-select --install): {name} unavailable")
             return False
         os.makedirs(self.registry.bin, exist_ok=True)
-        return jobs.Context().call(["swiftc", "-O", "-o", exe, str(src)]) == 0
+        return jobs.Context().call([swiftc, "-O", "-o", exe, str(src)]) == 0
 
     def fetch_vosk(self, name, base_url=VOSK_URL):
         return fetch_vosk(name, self.registry.models, base_url)
@@ -93,7 +92,8 @@ def fetch_vosk(name, models, base_url=VOSK_URL):
     tmp = tempfile.mkdtemp(prefix=".tmp.", dir=models)
     try:
         archive = os.path.join(tmp, "m.zip")
-        with urllib.request.urlopen(base_url + name + ".zip") as r, open(archive, "wb") as f:
+        with urllib.request.urlopen(base_url + name + ".zip", timeout=DOWNLOAD_TIMEOUT_S) as r, \
+                open(archive, "wb") as f:
             shutil.copyfileobj(r, f, 1 << 20)
         root = os.path.realpath(tmp)
         with zipfile.ZipFile(archive) as z:
@@ -106,8 +106,9 @@ def fetch_vosk(name, models, base_url=VOSK_URL):
             raise ValueError(f"no {name}/ in the archive")
         os.replace(os.path.join(tmp, name), os.path.join(models, name))
         return True
-    except (OSError, ValueError, zipfile.BadZipFile) as e:
-        warn(f"Vosk model {name}: download failed ({e})")
+    except (OSError, ValueError, zipfile.BadZipFile) as e:  # a timeout: TimeoutError, or (connecting) in URLError
+        timed_out = isinstance(e, TimeoutError) or isinstance(getattr(e, "reason", None), TimeoutError)
+        warn(f"Vosk model {name}: download failed ({f'no answer for {DOWNLOAD_TIMEOUT_S} s' if timed_out else e})")
         return False
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -117,19 +118,6 @@ def remove_sources(out):
     for f in glob.glob(glob.escape(out.path) + os.sep + "source.*"):
         if os.path.islink(f) or os.path.isfile(f):
             os.remove(f)
-
-
-def capture(argv, quiet=False):
-    """Run a program (registered for Ctrl-C), return (exit status, stdout text); quiet: no stderr. A non-UTF-8
-    terminal gets the program's stderr re-encoded, after it ends (jobs.reencodes)."""
-    through = not quiet and jobs.reencodes(sys.stderr)
-    p = jobs.spawn(argv, stdout=subprocess.PIPE,
-                   stderr=subprocess.DEVNULL if quiet else subprocess.PIPE if through else None)
-    out, err = jobs.communicate(p)
-    jobs._forget(p)
-    if err:
-        jobs.relay(io.BytesIO(err), sys.stderr)
-    return p.returncode, out.decode("utf-8", "replace")
 
 
 def read_json(path, default=None):
@@ -173,14 +161,14 @@ class Run:
         self.add(label, output, params, body)
 
     def has_stream(self, kind):
-        rc, out = capture([self.ffprobe, "-v", "error", "-select_streams", kind, "-show_entries", "stream=codec_type",
-                           "-of", "csv=p=0", self.src])
+        rc, out = jobs.capture([self.ffprobe, "-v", "error", "-select_streams", kind, "-show_entries",
+                                "stream=codec_type", "-of", "csv=p=0", self.src])
         return bool(out.strip())
 
     # --- the run ---------------------------------------------------------------------------------------------
     def main(self):
         o = self.o
-        self.ffmpeg, self.ffprobe = self.need("ffmpeg"), self.rt.which("ffprobe") or "ffprobe"
+        self.ffmpeg, self.ffprobe = self.need("ffmpeg"), self.need("ffprobe")  # full paths (Windows: not the cwd's)
         if not os.path.isfile(self.rt.helper_python):
             raise Fatal("helper venv missing — run: vidx setup")
         self.source()
@@ -220,7 +208,7 @@ class Run:
         ytdlp = [self.need("yt-dlp"), "--ignore-config", "--no-warnings", "--no-playlist"]
         out = o.out
         if not out:
-            rc, text = capture([*ytdlp, "--skip-download", "--print", "%(id)s", jobs.Text(o.input)])
+            rc, text = jobs.capture([*ytdlp, "--skip-download", "--print", "%(id)s", jobs.Text(o.input)])
             vid = re.sub(r"[^A-Za-z0-9_-]", "_", (text.splitlines() or [""])[0]) if rc == 0 else ""
             if not vid:
                 raise Fatal(f"could not read the video id of {o.input}")
@@ -279,20 +267,21 @@ class Run:
                     raise Fatal("audio extraction failed (ffmpeg)")
                 os.replace(tmp, self.audio)
                 self.out.stamp(self.audio, "16k-mono")
-            _, dur = capture([self.ffprobe, "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0",
-                              self.audio])
+            _, dur = jobs.capture([self.ffprobe, "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0",
+                                   self.audio])
             d = int(dur.strip().split(".")[0] or 0)
             log(f"duration: {d // 60}:{d % 60:02d}")
             if o.lang == "auto":
                 lang_txt = self.out.join("lang.txt")
-                if self.out.fresh(lang_txt, "detect"):
+                detect = f"detect {self.reg.lid.model}"  # the stamp names the model: another one detects again
+                if self.out.fresh(lang_txt, detect):
                     log("detecting language (10 s clips, 1 per minute, whisper turbo)")
                     tmp = self.out.join("lang.tmp")
                     if jobs.Context().call(self.reg.lid_argv("detect_lang", self.audio), stdout=tmp,
                                            drop=self.reg.lid.drop) != 0:
                         raise Fatal("language detection failed")
                     os.replace(tmp, lang_txt)
-                    self.out.stamp(lang_txt, "detect")
+                    self.out.stamp(lang_txt, detect)
                 with open(lang_txt, encoding="utf-8") as f:
                     langs = f.read().strip()
             else:
@@ -341,7 +330,8 @@ class Run:
         args = ["--model", engine.model, "-o", self.out.join("asr"), "--output-name", stem, "-f", "json",
                 "--verbose", "False", "--condition-on-previous-text", "False", "--language", lang]
         if self.prompt:
-            args += ["--initial-prompt", jobs.Text(self.prompt)]  # text: UTF-8 in every locale
+            # one argument, so a prompt that starts with "-" is not read as an option; text: UTF-8 in every locale
+            args.append(jobs.Text(f"--initial-prompt={self.prompt}"))
         if clips:
             args += ["--clip-timestamps", clips]
         return self.engine_job(engine, self.audio, *args)
@@ -374,8 +364,9 @@ class Run:
                                  self.parakeet_job())
                     if os.path.isfile(self.asr("parakeet")) and os.path.getsize(self.asr("parakeet")):
                         region_args.append(self.asr("parakeet"))
-                        snap = "parakeet"
-            params = f"{','.join(self.langs)} lid snap={snap}"  # boundaries snapped to parakeet's sentences or not
+                        snap = f"parakeet {self.reg.get('parakeet').model}"
+            # the language-ID model, and the boundaries snapped to parakeet's sentences (which model) or not
+            params = f"{','.join(self.langs)} lid {self.reg.lid.model} snap={snap}"
             regions = self.out.join("regions.json")
             if self.out.fresh(regions, params):
                 log("splitting into language regions (whisper turbo language ID)")
@@ -456,7 +447,7 @@ class Run:
     def apple_supports(self, locale):
         """Asks apple_asr once per run which locales it supports."""
         if self.apple_locales is None:
-            _, text = capture(self.reg.get("apple").argv("--locales"), quiet=True)
+            _, text = jobs.capture(self.reg.get("apple").argv("--locales"), quiet=True)
             self.apple_locales = next((line.split()[1:] for line in text.splitlines() if line.startswith("supported:")),
                                       [])
         return locale in self.apple_locales
@@ -482,29 +473,24 @@ class Run:
             shutil.rmtree(out.join("frames"), ignore_errors=True)
             shutil.rmtree(out.join("ocr"), ignore_errors=True)
             os.makedirs(out.join("frames"))
-            raw = tempfile.mkdtemp()  # outside OUT; % escaped too: ffmpeg's %06d pattern
-            try:
+            with jobs.temp_dir() as raw:  # outside OUT; % escaped too: ffmpeg's %06d pattern
                 pattern = os.path.join(raw.replace("%", "%%"), "%06d.jpg")
                 vf = (f"select='isnan(prev_selected_t)+gt(scene\\,{o.scene})+gte(t-prev_selected_t\\,{o.every})',"
                       "showinfo")
                 showinfo = os.path.join(raw, "showinfo.log")
-                with open(showinfo, "wb") as log_file:
-                    p = jobs.spawn([self.ffmpeg, "-nostdin", "-hide_banner", "-y", "-i", self.src, "-an", "-vf", vf,
-                                    "-fps_mode", "vfr", "-q:v", "2", pattern], stdout=ctx.stream, stderr=log_file)
-                    rc = jobs.wait(p)
-                    jobs._forget(p)
+                rc = ctx.call([self.ffmpeg, "-nostdin", "-hide_banner", "-y", "-i", self.src, "-an", "-vf", vf,
+                               "-fps_mode", "vfr", "-q:v", "2", pattern], stderr=showinfo)
                 if rc != 0 or ctx.call([self.rt.helper_python, str(paths.LIB / "frames.py"), raw, showinfo,
                                         out.join("frames"), o.dedup, o.roi, o.crop]) != 0:
                     return False
-            finally:
-                shutil.rmtree(raw, ignore_errors=True)
             out.stamp(frames_json, fp)
         ocr_out = out.join("ocr", "ocr.jsonl")
-        if o.do_ocr and out.fresh(ocr_out, self.ocr_langs):
+        ocr = self.reg.get("ocr")
+        ocr_params = f"{ocr.model} {self.ocr_langs}"  # the backend too: Apple Vision and RapidOCR read differently
+        if o.do_ocr and out.fresh(ocr_out, ocr_params):
             if self.platform_needs_swift() and not self.rt.build_swift("ocr"):
                 return False
             files = sorted(glob.glob(glob.escape(out.join("frames", "unique")) + os.sep + "*.jpg"))
-            ocr = self.reg.get("ocr")
             ctx.say(f"OCR ({ocr.model}, {self.ocr_langs}) on {len(files)} frames")
             os.makedirs(out.join("ocr"), exist_ok=True)
             tmp = out.join("ocr", "ocr.tmp")
@@ -518,7 +504,7 @@ class Run:
                 if rc != 0:
                     return False
             os.replace(tmp, ocr_out)
-            out.stamp(ocr_out, self.ocr_langs)
+            out.stamp(ocr_out, ocr_params)
         return True
 
     def platform_needs_swift(self):

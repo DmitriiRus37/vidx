@@ -14,11 +14,15 @@ from vidx.state import OutDir
 PY = [sys.executable, "-I", "-c"]
 
 
-def stamp_job(tmp_path, label, seconds=0.0, code=0, output=""):
+def stamp_job(tmp_path, label, seconds=0.0, code=0, output="", together=0):
     """A job that records its start/end in tmp_path/runs/<label> and exits with code. One file per job: jobs
-    running together cannot share one appended file on Windows, where appends are not atomic."""
+    running together cannot share one appended file on Windows, where appends are not atomic. together=N: after
+    its start it waits (up to 30 s) until N jobs have started, so the first N overlap however slowly Python starts
+    (a Windows runner can take longer than a short job)."""
     (tmp_path / "runs").mkdir(exist_ok=True)
-    script = (f"import time,sys; f=open(sys.argv[1],'a'); f.write('start {label} %f\\n' % time.time()); f.flush();"
+    script = (f"import os,time,sys; f=open(sys.argv[1],'a'); f.write('start {label} %f\\n' % time.time()); f.flush();"
+              f"d=os.path.dirname(sys.argv[1]); t=time.time()+30\n"
+              f"while len(os.listdir(d)) < {together} and time.time() < t: time.sleep(0.02)\n"
               f"time.sleep({seconds}); f.write('end {label} %f\\n' % time.time()); sys.exit({code})")
     return jobs.Job(label, output, "p", jobs.command([*PY, script, str(tmp_path / "runs" / label)]))
 
@@ -46,7 +50,7 @@ def out(tmp_path):
 
 @pytest.mark.parametrize("n", [1, 2, 3])
 def test_limit_and_order(tmp_path, out, n):
-    q = [stamp_job(tmp_path, f"job{i}", 0.6) for i in range(5)]
+    q = [stamp_job(tmp_path, f"job{i}", 0.3, together=n) for i in range(5)]
     jobs.run_queue(q, n, out)
     starts = [label for kind, label, _ in runs(tmp_path) if kind == "start"]
     if n == 1:
@@ -85,6 +89,81 @@ def test_cached_and_stamped(tmp_path, out, capsys):
     assert "==> eng [ru]\n" in err and "==> eng [ru]: done in" in err and "==> eng [ru]: cached" in err
 
 
+def test_an_error_in_one_job_stops_the_others(tmp_path, out):
+    """An unexpected exception in a -j N job (OSError: no space left, writing a stamp) went up to cli.main, which
+    killed only on Ctrl-C: vidx then waited for the other jobs' threads, and their engines kept running."""
+    pid_file = tmp_path / "pid"
+    slow = jobs.Job("slow", str(tmp_path / "out" / "slow.json"), "p", jobs.command(
+        [*PY, "import os,sys,time; open(sys.argv[1],'w').write(str(os.getpid())); time.sleep(60)", str(pid_file)]))
+
+    def broken(ctx):
+        deadline = time.time() + 20
+        while not (pid_file.exists() and pid_file.read_text(encoding="utf-8")):
+            assert time.time() < deadline
+            time.sleep(0.05)
+        raise OSError(28, "No space left on device")
+
+    t0 = time.monotonic()
+    with pytest.raises(OSError, match="No space left"):
+        jobs.run_queue([jobs.Job("broken", "", "", broken), slow], 2, out)
+    assert time.monotonic() - t0 < 20
+    pid = int(pid_file.read_text(encoding="utf-8"))
+    deadline = time.time() + 5
+    while alive_or_zombie(pid) and time.time() < deadline:
+        time.sleep(0.05)
+    assert not alive_or_zombie(pid)
+    assert not (tmp_path / "out" / ".vidx" / "slow.json.params").exists()
+
+
+def alive_or_zombie(pid):
+    """Whether pid still runs (a killed child not yet reaped by its Popen counts as gone)."""
+    import psutil
+
+    try:
+        return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return False
+
+
+def test_a_killed_jobs_output_is_never_stamped(tmp_path, out, capsys):
+    """A job whose programs were killed (Ctrl-C, or another job's error) may leave a partial output, even with a
+    body that reports success: it must not be stamped done, or the next run would take it as finished."""
+    target = tmp_path / "out" / "asr.json"
+
+    def body(ctx):
+        target.write_text("{partial", encoding="utf-8", newline="\n")
+        jobs.kill_all()  # what Ctrl-C does meanwhile
+        return True
+
+    jobs.run_job(jobs.Job("eng", str(target), "p", body), out, background=False)
+    assert not (tmp_path / "out" / ".vidx" / "asr.json.params").exists()
+    assert out.fresh(str(target), "p") and out.failed() == []
+    assert "eng: done" not in capsys.readouterr().err
+
+
+def test_after_kill_all_no_program_starts(monkeypatch):
+    """kill_all() marks vidx as stopping: a job that comes next must not start its program (it would outlive the
+    kill)."""
+    monkeypatch.setattr(jobs, "spawn", lambda *a, **k: pytest.fail("a program started after kill_all"))
+    jobs.kill_all()
+    assert jobs.Context().call(["x"]) == 130
+
+
+def test_call_returns_after_the_whole_stderr_is_shown(monkeypatch):
+    """A filtered stderr is copied by a thread; call() returns only when it has copied all of it, so the end of an
+    engine's output is neither lost nor shown after vidx's next message."""
+    class Slow(io.StringIO):
+        def write(self, text):
+            time.sleep(0.005)
+            return super().write(text)
+
+    shown = Slow()
+    monkeypatch.setattr(sys, "stderr", shown)
+    script = "import sys; sys.stderr.write(''.join(f'line {i}\\n' for i in range(100)))"
+    assert jobs.Context().call([*PY, script], drop="Fetching") == 0
+    assert shown.getvalue().splitlines()[-1] == "line 99"
+
+
 @pytest.mark.parametrize("label, name", [("GigaAM-v3 [ru]", "GigaAM-v3_ru_.log"), ("frames + OCR", "frames_OCR.log"),
                                          ("whisper large-v3 [en]", "whisper_large-v3_en_.log"),
                                          ("Vosk [ru] (CPU)", "Vosk_ru_CPU_.log"), ("Видео", "_.log")])
@@ -104,6 +183,14 @@ def test_python_job_and_stdout_to_file(tmp_path, out):
     jobs.run_queue([jobs.Job("py", "", "", body), stamp_job(tmp_path, "x")], 2, out)
     assert target.read_bytes() == b"ru,en\n"
     assert "frames: hello" in (tmp_path / "out" / "logs" / "py.log").read_text(encoding="utf-8")
+
+
+def test_stderr_to_a_file(tmp_path):
+    """call(stderr=path): the program's stderr is saved (ffmpeg's showinfo log for frames.py)."""
+    log_file = tmp_path / "err.log"
+    script = "import sys; sys.stderr.reconfigure(newline='\\n'); sys.stderr.write('n:1 pts:2\\n')"
+    assert jobs.Context().call([*PY, script], stderr=str(log_file)) == 0
+    assert log_file.read_bytes() == b"n:1 pts:2\n"
 
 
 def test_stderr_filter(tmp_path, out, capsys):
@@ -155,6 +242,29 @@ def test_kill_tree_kills_grandchildren(tmp_path, monkeypatch, with_psutil):
     while alive(grandchild) and time.time() < deadline:
         time.sleep(0.05)
     assert not alive(grandchild)
+
+
+def test_a_program_started_while_vidx_is_interrupted_is_killed(monkeypatch):
+    """-j N: a worker thread inside Popen while the main thread runs kill_all() — the program is not yet in the
+    list kill_all() kills, and was left running. The window is widened by killing from inside Popen."""
+    started = []
+    real = subprocess.Popen
+
+    def popen_then_ctrl_c(*a, **kw):
+        p = real(*a, **kw)
+        started.append(p)
+        jobs.kill_all()  # Ctrl-C lands now: the program exists, spawn has not registered it yet
+        return p
+
+    monkeypatch.setattr(subprocess, "Popen", popen_then_ctrl_c)
+    monkeypatch.setattr(jobs, "_live", set())
+    try:
+        jobs.spawn([*PY, "import time; time.sleep(60)"])
+        assert started[0].wait(timeout=10) is not None
+    finally:
+        if started and started[0].poll() is None:
+            started[0].kill()
+            started[0].wait()
 
 
 def test_spawn_flags_per_platform(monkeypatch):
@@ -233,18 +343,46 @@ def test_windows_kill_tree_with_psutil(monkeypatch):
     assert log == [("terminate", 11), ("terminate", 12), ("terminate", 10), ("wait", 3), ("kill", 12)]
 
 
+def test_several_trees_get_their_sigterm_first_and_one_wait(monkeypatch):
+    """kill_all with -j N: every tree is told to stop before vidx waits, and it waits KILL_WAIT_S once, not once
+    per tree."""
+    log = []
+    monkeypatch.setattr(jobs, "psutil", fake_psutil(log))
+    jobs.kill_trees([10, 20], platform="win32")
+    assert [e for e in log if e[0] == "wait"] == [("wait", 3)]
+    assert log.index(("terminate", 20)) < log.index(("wait", 3))
+
+
+def test_a_second_interrupt_is_ignored(monkeypatch):
+    """The handler raises Interrupted once; a Ctrl-C while vidx shuts down (kill_all) returns, so the kill
+    finishes."""
+    import signal
+
+    installed = {}
+    monkeypatch.setattr(signal, "signal", lambda s, h: installed.setdefault(s, h))
+    monkeypatch.setattr(signal, "getsignal", lambda s: signal.SIG_DFL)
+    jobs.install_interrupt_handlers()
+    handler = installed[signal.SIGINT]
+    with pytest.raises(jobs.Interrupted):
+        handler(signal.SIGINT, None)
+    assert handler(signal.SIGINT, None) is None
+
+
 def test_windows_kill_tree_without_psutil_uses_taskkill(monkeypatch):
     calls = []
     monkeypatch.setattr(jobs, "psutil", None)
     monkeypatch.setattr(subprocess, "run", lambda argv, **kw: calls.append(argv))
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
     jobs.kill_tree(42, platform="win32")
-    assert calls == [["taskkill", "/PID", "42", "/T", "/F"]]
+    assert calls == [[r"C:\Windows\System32\taskkill.exe", "/PID", "42", "/T", "/F"]]  # not a taskkill in the cwd
 
 
 def test_interrupt_signals_per_platform():
     import signal
 
-    assert jobs.interrupt_signals("linux") == [signal.SIGINT, signal.SIGTERM]
+    if os.name != "nt":  # the terminal closed: the engines are in their own sessions and get no SIGHUP themselves
+        assert jobs.interrupt_signals("linux") == jobs.interrupt_signals("darwin") == [
+            signal.SIGINT, signal.SIGTERM, signal.SIGHUP]
     names = [getattr(s, "name", s) for s in jobs.interrupt_signals("win32")]
     assert names[:2] == ["SIGINT", "SIGTERM"] and names[2] in ("SIGBREAK", 21)
 
@@ -266,6 +404,36 @@ def test_the_orchestrator_waits_in_slices():
 
     found = [p for path in sorted((ROOT / "src" / "vidx").glob("*.py")) for p in blocking_waits(path)]
     assert found == []
+
+
+def test_programs_start_only_through_jobs():
+    """CLAUDE.md: every program runs through vidx.jobs (own process group, killed on Ctrl-C, waited for in slices).
+    setup's device probes and nvidia-smi, and the registry's `uv tool dir`, ran with subprocess.run instead."""
+    import ast
+
+    from helpers import ROOT
+
+    sources = [p for p in sorted((ROOT / "src" / "vidx").glob("*.py")) if p.name != "jobs.py"]
+    found = [f"{path.name}:{node.lineno}" for path in sources
+             for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+             and isinstance(node.func.value, ast.Name) and node.func.value.id == "subprocess"
+             and node.func.attr in ("run", "Popen", "call", "check_call", "check_output")]
+    assert found == []
+
+
+def test_output_reads_both_streams_and_kills_a_program_past_its_timeout(tmp_path):
+    # bytes, not text: Windows would write CRLF, a Latin-1 locale (-I ignores PYTHONUTF8) Latin-1
+    script = "import sys; sys.stdout.buffer.write(b'caf\\xc3\\xa9\\n'); sys.stderr.buffer.write(b'w\\n'); sys.exit(3)"
+    assert jobs.output([*PY, script]) == (3, "café\n", "w\n")
+    pid_file, before = tmp_path / "pid", set(jobs._live)
+    t0 = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        jobs.output([*PY, "import os,sys,time; open(sys.argv[1],'w').write(str(os.getpid())); time.sleep(60)",
+                     str(pid_file)], timeout=2)
+    assert time.monotonic() - t0 < 15
+    assert not alive_or_zombie(int(pid_file.read_text(encoding="utf-8")))
+    assert set(jobs._live) <= before  # unregistered
 
 
 def test_wait_returns_the_exit_status_after_slices():
@@ -338,11 +506,9 @@ def test_engine_stderr_is_reencoded_for_a_non_utf8_terminal(monkeypatch):
 
 
 def test_captured_programs_stderr_is_reencoded_too(monkeypatch):
-    from vidx import pipeline
-
     tty = Terminal("latin-1")
     monkeypatch.setattr(sys, "stderr", tty)
-    assert pipeline.capture(CHILD) == (0, "")
+    assert jobs.capture(CHILD) == (0, "")
     assert tty.shown() == "café ? ok\n".encode("latin-1")
 
 
@@ -413,3 +579,52 @@ def test_engine_stderr_on_a_real_latin1_terminal(tmp_path):
     os.close(master)
     assert p.wait(timeout=30) == 0
     assert b"caf\xe9 ? ok" in shown, shown
+
+
+def test_a_temp_folder_outlives_an_interrupt_until_the_programs_are_killed(tmp_path, monkeypatch):
+    """Windows, -j 1: Ctrl-C in the frames step unwound the step (rmtree of ffmpeg's temp folder) before cli.main
+    killed ffmpeg, which still held files there, so the folder was left behind; with -j N vidx could exit before the
+    worker thread removed it. The folder is now removed after kill_all (remove_temps), not while unwinding."""
+    import tempfile
+
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    with jobs.temp_dir() as d:
+        assert os.path.isdir(d)
+    assert not os.path.exists(d)  # a normal end: gone at once
+    with pytest.raises(jobs.Interrupted), jobs.temp_dir() as d:
+        jobs._interrupted.set()  # what the signal handler does before it raises
+        raise jobs.Interrupted
+    assert os.path.isdir(d)  # a program may still write into it
+    jobs.remove_temps()
+    assert not os.path.exists(d)
+
+
+# --- cli.main's way out ---------------------------------------------------------------------------------------
+@pytest.mark.parametrize("exc, code", [(jobs.Interrupted(), 130), (OSError(28, "No space left on device"), 1)])
+def test_cli_kills_every_tree_on_any_exception(monkeypatch, capsys, exc, code):
+    """Ctrl-C and an unexpected error leave the same way: every program tree killed, then exit (130 or 1) without
+    waiting for worker threads."""
+    from vidx import cli
+
+    calls = []
+
+    def boom(args):
+        raise exc
+
+    class Exit(Exception):
+        pass
+
+    def fake_exit(c):
+        calls.append(("exit", c))
+        raise Exit
+
+    monkeypatch.setattr(cli, "dispatch", boom)
+    monkeypatch.setattr(jobs, "kill_all", lambda: calls.append(("kill_all",)))
+    monkeypatch.setattr(jobs, "remove_temps", lambda: calls.append(("remove_temps",)))
+    monkeypatch.setattr(jobs, "install_interrupt_handlers", lambda: None)
+    monkeypatch.setattr(os, "_exit", fake_exit)
+    with pytest.raises(Exit):
+        cli.main(["x"])
+    assert calls == [("kill_all",), ("remove_temps",), ("exit", code)]
+    err = capsys.readouterr().err
+    assert ("interrupted" in err) if code == 130 else ("No space left on device" in err and "unexpected error" in err)

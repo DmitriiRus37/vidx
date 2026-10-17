@@ -8,12 +8,15 @@ thread waits for programs in POLL_S slices (wait, communicate): Windows runs the
 """
 import codecs
 import contextlib
+import io
 import locale
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Callable
@@ -32,12 +35,13 @@ except ImportError:  # optional on POSIX (killpg covers the tree); a dependency 
 KILL_WAIT_S = 3
 POLL_S = 0.5  # a wait without a timeout blocks a Windows Ctrl-C / Ctrl-Break until the program ends
 _live = set()  # running Popen objects
+_temps = set()  # temp folders programs write into (temp_dir), removed after kill_all if vidx is stopped
 _live_lock = threading.Lock()
 _interrupted = threading.Event()
 
 
 class Interrupted(BaseException):
-    """Ctrl-C, SIGTERM or Ctrl-Break: kill everything, exit 130."""
+    """Ctrl-C, SIGTERM, SIGHUP (POSIX) or Ctrl-Break: kill everything, exit 130."""
 
 
 @dataclass
@@ -90,8 +94,11 @@ def spawn(argv, platform=None, stdout=None, stderr=None, env=None):
     else:
         kw["start_new_session"] = True
     p = subprocess.Popen([os_arg(a, platform) for a in argv], **kw)
-    with _live_lock:
+    with _live_lock:  # kill_all sets _interrupted, then lists _live under this lock: p is in its list, or seen here
         _live.add(p)
+        late = _interrupted.is_set()
+    if late:  # started while vidx was being interrupted (another thread, -j N): kill_all may not have seen it
+        kill_tree(p.pid, platform)
     return p
 
 
@@ -111,6 +118,39 @@ def communicate(p):
             return p.communicate(timeout=POLL_S)
         except subprocess.TimeoutExpired:
             continue
+
+
+def capture(argv, quiet=False):
+    """Run a program (registered for Ctrl-C), return (exit status, stdout text); quiet: no stderr. A non-UTF-8
+    terminal gets the program's stderr re-encoded, after it ends (reencodes)."""
+    through = not quiet and reencodes(sys.stderr)
+    err_to = subprocess.DEVNULL if quiet else subprocess.PIPE if through else None
+    p = spawn(argv, stdout=subprocess.PIPE, stderr=err_to)
+    out, err = communicate(p)
+    _forget(p)
+    if err:
+        relay(io.BytesIO(err), sys.stderr)
+    return p.returncode, out.decode("utf-8", "replace")
+
+
+def output(argv, timeout=None, env=None):
+    """Run a program (registered for Ctrl-C), return (exit status, stdout, stderr), both read as UTF-8 (vidx's own
+    lib scripts, -X utf8). Past timeout seconds its tree is killed and subprocess.TimeoutExpired raised."""
+    p = spawn(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    deadline = None if timeout is None else time.monotonic() + timeout
+    try:
+        while True:
+            try:
+                out, err = p.communicate(timeout=POLL_S)
+                break
+            except subprocess.TimeoutExpired:
+                if deadline is not None and time.monotonic() > deadline:
+                    kill_tree(p.pid)
+                    communicate(p)  # the killed tree has closed the pipes
+                    raise subprocess.TimeoutExpired(argv, timeout) from None
+    finally:
+        _forget(p)
+    return p.returncode, out.decode("utf-8", "replace"), err.decode("utf-8", "replace")
 
 
 def reencodes(stream):
@@ -160,17 +200,25 @@ def _forget(p):
 
 def kill_tree(pid, platform=None):
     """Terminate a process and all its descendants; kill what is still alive after KILL_WAIT_S."""
+    kill_trees([pid], platform)
+
+
+def kill_trees(pids, platform=None):
+    """kill_tree for several trees at once: every tree gets its SIGTERM first, then one wait of KILL_WAIT_S for
+    all of them, then a kill for what is left (not KILL_WAIT_S per tree)."""
     platform = platform or paths.platform_of()
     procs = []
     if psutil:
-        try:
-            parent = psutil.Process(pid)
-            procs = [*parent.children(recursive=True), parent]
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            procs = []
+        for pid in pids:
+            try:
+                parent = psutil.Process(pid)
+                procs += [*parent.children(recursive=True), parent]
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
     if platform != "win32":
-        with contextlib.suppress(OSError):  # ProcessLookupError, PermissionError
-            os.killpg(pid, signal.SIGTERM)  # the job's own process group (new session)
+        for pid in pids:
+            with contextlib.suppress(OSError):  # ProcessLookupError, PermissionError
+                os.killpg(pid, signal.SIGTERM)  # the job's own process group (new session)
     if psutil:
         for p in procs:
             with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
@@ -180,40 +228,79 @@ def kill_tree(pid, platform=None):
             with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
                 p.kill()
     elif platform == "win32":
-        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL)
+        taskkill = paths.system_program("taskkill", platform)  # System32's, not one in the current directory
+        for pid in pids:
+            subprocess.run([taskkill, "/PID", str(pid), "/T", "/F"], stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)
     else:
-        deadline = time.monotonic() + KILL_WAIT_S
-        while time.monotonic() < deadline:
+        def group_alive(pid):
             try:
                 os.killpg(pid, 0)
             except (ProcessLookupError, PermissionError, OSError):
-                return
+                return False
+            return True
+
+        deadline = time.monotonic() + KILL_WAIT_S
+        left = list(pids)
+        while left and time.monotonic() < deadline:
+            left = [pid for pid in left if group_alive(pid)]
             time.sleep(0.05)
-        with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
-            os.killpg(pid, signal.SIGKILL)
+        for pid in left:
+            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                os.killpg(pid, signal.SIGKILL)
 
 
 def kill_all():
+    """Kill every running program tree, all at once; from now on no job starts a program (call() → 130)."""
     _interrupted.set()
     with _live_lock:
         running = list(_live)
-    for p in running:
-        if p.poll() is None:
-            kill_tree(p.pid)
+    kill_trees([p.pid for p in running if p.poll() is None])
+
+
+@contextlib.contextmanager
+def temp_dir():
+    """A temp folder for a program's files, removed when the block ends. If vidx is being stopped, it stays until
+    remove_temps(), after kill_all: on Windows a running program's files cannot be deleted, and with -j N vidx may
+    exit before the worker thread unwinds."""
+    d = tempfile.mkdtemp()
+    with _live_lock:
+        _temps.add(d)
+    try:
+        yield d
+    finally:
+        if not _interrupted.is_set():
+            shutil.rmtree(d, ignore_errors=True)
+            with _live_lock:
+                _temps.discard(d)
+
+
+def remove_temps():
+    """The temp folders still there (vidx was stopped): call after kill_all."""
+    with _live_lock:
+        left = list(_temps)
+        _temps.clear()
+    for d in left:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def interrupt_signals(platform=None):
     sigs = [signal.SIGINT, signal.SIGTERM]
     if (platform or paths.platform_of()) == "win32":
         sigs.append(getattr(signal, "SIGBREAK", 21))  # Ctrl-Break
+    elif hasattr(signal, "SIGHUP"):  # the terminal closed: the engines, in sessions of their own, are not told
+        sigs.append(signal.SIGHUP)
     return sigs
 
 
 def install_interrupt_handlers():
-    """Ctrl-C / SIGTERM / Ctrl-Break raise Interrupted in the main thread. A signal ignored when vidx started
+    """Ctrl-C / SIGTERM / SIGHUP / Ctrl-Break raise Interrupted in the main thread, once: a signal that comes while
+    vidx is already shutting down (kill_all waits up to KILL_WAIT_S) is ignored. A signal ignored when vidx started
     (e.g. a background job of a non-interactive shell) stays ignored, as bash's trap did."""
     def handler(signum, frame):
+        if _interrupted.is_set():  # shutting down already: a second Ctrl-C must not break off the kill
+            return
+        _interrupted.set()
         raise Interrupted
 
     for s in interrupt_signals():
@@ -232,17 +319,19 @@ class Context:
         s.write(msg + "\n")
         s.flush()
 
-    def call(self, argv, stdout=None, drop=None, env=None):
-        """Run a program, wait, return its exit status. stdout: a file path to write its output to (else the
-        job's output); drop: stderr lines containing this text are not shown (Hugging Face "Fetching"). Its stderr
-        goes through vidx when filtered, or re-encoded for a non-UTF-8 terminal (reencodes)."""
+    def call(self, argv, stdout=None, drop=None, env=None, stderr=None):
+        """Run a program, wait, return its exit status. stdout / stderr: a file path to write that output to (else
+        the job's output); drop: stderr lines containing this text are not shown (Hugging Face "Fetching"). Its
+        stderr goes through vidx when filtered, or re-encoded for a non-UTF-8 terminal (reencodes)."""
         if _interrupted.is_set():
             return 130
-        out_file = open(stdout, "wb") if stdout else None  # noqa: SIM115 — closed below
-        try:
+        with contextlib.ExitStack() as files:
+            out_file = files.enter_context(open(stdout, "wb")) if stdout else None
+            err_file = files.enter_context(open(stderr, "wb")) if stderr else None
             target = self.stream
-            through = drop is not None or (target is None and reencodes(sys.stderr))
-            p = spawn(argv, stdout=out_file or target, stderr=subprocess.PIPE if through else target, env=env)
+            through = not err_file and (drop is not None or (target is None and reencodes(sys.stderr)))
+            p = spawn(argv, stdout=out_file or target, stderr=err_file or (subprocess.PIPE if through else target),
+                      env=env)
             pump = None
             if through:  # copied in a thread: the main thread must stay in wait()'s slices
                 pump = threading.Thread(target=relay, args=(p.stderr, target or sys.stderr, drop), daemon=True)
@@ -252,9 +341,6 @@ class Context:
                 pump.join(POLL_S)
             _forget(p)
             return rc
-        finally:
-            if out_file:
-                out_file.close()
 
 
 def log_name(label):
@@ -312,7 +398,8 @@ def run_queue(queue, n, out):
             done, pending = wait_futures(pending, timeout=POLL_S, return_when=FIRST_COMPLETED)
             for f in done:
                 f.result()
-    except BaseException:  # Ctrl-C: do not wait for the workers, whose programs are about to be killed
+    except BaseException:  # Ctrl-C, or an error in a job (OSError: disk full): stop the other jobs' programs too,
+        kill_all()  # else their threads would keep vidx waiting until each engine ends on its own
         pool.shutdown(wait=False, cancel_futures=True)
         raise
     pool.shutdown()
