@@ -466,8 +466,7 @@ class Run:
             shutil.rmtree(out.join("frames"), ignore_errors=True)
             shutil.rmtree(out.join("ocr"), ignore_errors=True)
             os.makedirs(out.join("frames"))
-            raw = tempfile.mkdtemp()  # outside OUT; % escaped too: ffmpeg's %06d pattern
-            try:
+            with jobs.temp_dir() as raw:  # outside OUT; % escaped too: ffmpeg's %06d pattern
                 pattern = os.path.join(raw.replace("%", "%%"), "%06d.jpg")
                 vf = (f"select='isnan(prev_selected_t)+gt(scene\\,{o.scene})+gte(t-prev_selected_t\\,{o.every})',"
                       "showinfo")
@@ -477,8 +476,6 @@ class Run:
                 if rc != 0 or ctx.call([self.rt.helper_python, str(paths.LIB / "frames.py"), raw, showinfo,
                                         out.join("frames"), o.dedup, o.roi, o.crop]) != 0:
                     return False
-            finally:
-                shutil.rmtree(raw, ignore_errors=True)
             out.stamp(frames_json, fp)
         ocr_out = out.join("ocr", "ocr.jsonl")
         if o.do_ocr and out.fresh(ocr_out, self.ocr_langs):

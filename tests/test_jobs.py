@@ -507,6 +507,24 @@ def test_engine_stderr_on_a_real_latin1_terminal(tmp_path):
     assert b"caf\xe9 ? ok" in shown, shown
 
 
+def test_a_temp_folder_outlives_an_interrupt_until_the_programs_are_killed(tmp_path, monkeypatch):
+    """Windows, -j 1: Ctrl-C in the frames step unwound the step (rmtree of ffmpeg's temp folder) before cli.main
+    killed ffmpeg, which still held files there, so the folder was left behind; with -j N vidx could exit before the
+    worker thread removed it. The folder is now removed after kill_all (remove_temps), not while unwinding."""
+    import tempfile
+
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    with jobs.temp_dir() as d:
+        assert os.path.isdir(d)
+    assert not os.path.exists(d)  # a normal end: gone at once
+    with pytest.raises(jobs.Interrupted), jobs.temp_dir() as d:
+        jobs._interrupted.set()  # what the signal handler does before it raises
+        raise jobs.Interrupted
+    assert os.path.isdir(d)  # a program may still write into it
+    jobs.remove_temps()
+    assert not os.path.exists(d)
+
+
 # --- cli.main's way out ---------------------------------------------------------------------------------------
 @pytest.mark.parametrize("exc, code", [(jobs.Interrupted(), 130), (OSError(28, "No space left on device"), 1)])
 def test_cli_kills_every_tree_on_any_exception(monkeypatch, capsys, exc, code):
@@ -528,10 +546,11 @@ def test_cli_kills_every_tree_on_any_exception(monkeypatch, capsys, exc, code):
 
     monkeypatch.setattr(cli, "dispatch", boom)
     monkeypatch.setattr(jobs, "kill_all", lambda: calls.append(("kill_all",)))
+    monkeypatch.setattr(jobs, "remove_temps", lambda: calls.append(("remove_temps",)))
     monkeypatch.setattr(jobs, "install_interrupt_handlers", lambda: None)
     monkeypatch.setattr(os, "_exit", fake_exit)
     with pytest.raises(Exit):
         cli.main(["x"])
-    assert calls == [("kill_all",), ("exit", code)]
+    assert calls == [("kill_all",), ("remove_temps",), ("exit", code)]
     err = capsys.readouterr().err
     assert ("interrupted" in err) if code == 130 else ("No space left on device" in err and "unexpected error" in err)

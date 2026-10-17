@@ -12,9 +12,11 @@ import io
 import locale
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Callable
@@ -33,6 +35,7 @@ except ImportError:  # optional on POSIX (killpg covers the tree); a dependency 
 KILL_WAIT_S = 3
 POLL_S = 0.5  # a wait without a timeout blocks a Windows Ctrl-C / Ctrl-Break until the program ends
 _live = set()  # running Popen objects
+_temps = set()  # temp folders programs write into (temp_dir), removed after kill_all if vidx is stopped
 _live_lock = threading.Lock()
 _interrupted = threading.Event()
 
@@ -232,6 +235,32 @@ def kill_all():
     with _live_lock:
         running = list(_live)
     kill_trees([p.pid for p in running if p.poll() is None])
+
+
+@contextlib.contextmanager
+def temp_dir():
+    """A temp folder for a program's files, removed when the block ends. If vidx is being stopped, it stays until
+    remove_temps(), after kill_all: on Windows a running program's files cannot be deleted, and with -j N vidx may
+    exit before the worker thread unwinds."""
+    d = tempfile.mkdtemp()
+    with _live_lock:
+        _temps.add(d)
+    try:
+        yield d
+    finally:
+        if not _interrupted.is_set():
+            shutil.rmtree(d, ignore_errors=True)
+            with _live_lock:
+                _temps.discard(d)
+
+
+def remove_temps():
+    """The temp folders still there (vidx was stopped): call after kill_all."""
+    with _live_lock:
+        left = list(_temps)
+        _temps.clear()
+    for d in left:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def interrupt_signals(platform=None):

@@ -95,6 +95,7 @@ def main(argv=None):
         return dispatch(args)
     except (Usage, log.Fatal) as e:
         log.error(str(e))
+        jobs.remove_temps()  # a job's Fatal with -j N: run_queue killed the other jobs' programs
         return 1
     except jobs.Interrupted:
         log.warn("interrupted")  # first: the kill may take KILL_WAIT_S
@@ -108,6 +109,7 @@ def main(argv=None):
 def stop(code):
     """Kill every running program tree and exit now: worker threads may still be waiting on killed programs."""
     jobs.kill_all()
+    jobs.remove_temps()  # only now: the killed programs no longer hold files there
     sys.stdout.flush()
     sys.stderr.flush()
     os._exit(code)
