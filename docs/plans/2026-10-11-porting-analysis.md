@@ -685,3 +685,34 @@ three OSes and in the Latin-1 locale, `smoke` on Linux and Windows (runs above).
    UTF-8 + LF when redirected (`da53489`), and engine stderr is re-encoded for a non-UTF-8 terminal
    (`938ec26`). Also done: a device probe's timeout no longer stops `vidx setup` (`dc931d2`), and the device
    probes and the GigaAM warm-up are lib scripts instead of `-c` snippets (`eb50086`).
+
+### 10.5 Review fixes
+
+A code review of the port (`903d157`, `3a5ea9a`, `63a87ec`) found these; each was reproduced or confirmed in
+the code, then fixed test first, one commit each:
+
+| Finding | Fix (commit) |
+|---|---|
+| A second Ctrl-C during the shutdown raised inside `kill_all`: traceback, exit 1, an engine ignoring SIGTERM never killed | the handler raises once and ignores later signals; "interrupted" first; all trees get SIGTERM, then one wait (`jobs: a second Ctrl-C no longer breaks off the shutdown`) |
+| An unexpected error in a `-j N` job (disk full) hung vidx while the other engines ran | `run_queue` kills on any exception; `cli.main` reports it, kills, exits 1 (`jobs: any error in a -j job stops every engine`) |
+| SIGHUP (terminal closed) left the engines running (POSIX: they are in their own sessions) | SIGHUP is an interrupt signal (`jobs: closing the terminal stops the engines`) |
+| A program spawned while `kill_all` listed the running ones was never killed (`-j N`) | registered and checked under the lock `kill_all` lists under (`jobs: kill a program started during Ctrl-C`) |
+| Windows `-j 1`: Ctrl-C during frame extraction left ffmpeg's temp folder (removed before ffmpeg was killed) | `jobs.temp_dir`, removed after `kill_all` (`jobs: remove ffmpeg's temp frames after the kill, not before`) |
+| Language ID had no CPU fallback when CUDA fails at inference; the device report said `cuda float16` regardless | `whisper_fw.Model` (fallback at load and at run time) for whisper and language ID; the probe loads cuBLAS (`lid: ...`, `setup: the whisper device report ...`) |
+| Stamps without the language-ID, parakeet (snapping) and OCR models | the stamps name them; existing folders redo these steps once (`pipeline: stamps name ...`) |
+| `vidx setup` kept the old torch build after a GPU change; two onnxruntime flavours in one venv | torch pinned with `+cpu`/`+cu126`; other flavours uninstalled first (`setup: a GPU change replaces ...`) |
+| `vidx setup` ignored failed Swift builds and Vosk downloads ("setup done", exit 0) | exit 1 with a message (`setup: fail when ...`) |
+| A Linux file name that is not UTF-8 crashed `.vidx/input` | surrogateescape (`state: remember an input whose file name is not UTF-8`) |
+| Vosk download without a timeout | 60 s (`pipeline: the Vosk download gives up on a silent server`) |
+| Windows took ffmpeg, yt-dlp, uv, nvidia-smi, taskkill from the current directory first | `paths.which` (PATH only), `paths.system_program` (System32) (`windows: programs by full path ...`) |
+
+Also: `setup.py`/`engines.py` run programs through `jobs.output` (a test keeps `subprocess` calls in `jobs.py`),
+`capture` moved into `jobs`, `Context.call(stderr=<file>)` replaced the frames step's own spawn, the prompt goes
+as `--initial-prompt=<prompt>` (a prompt starting with `-`), CI pins ruff and uv and checks out without the
+token, and tests kill the mutants that survived (stderr pump join, the interrupted check after a job body,
+the flag set by `kill_all`); `test_limit_and_order` no longer races Python's startup on Windows.
+
+Validation: unit + CLI `577 passed, 2 skipped` on 3.14 and 3.11 (macOS); `ci` green on all 7 jobs (run
+39041551954); `smoke` (temporary push trigger, removed afterwards) green on Ubuntu and Windows (run
+39041003230): torch `2.14.1+cpu`, onnxruntime flavour swap steps, every probe named its device, real backend
+tests `13 passed, 1 xfailed`.
