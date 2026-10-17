@@ -421,7 +421,7 @@ Tests are written first (TDD) and need no models by default:
 uv run --isolated --group test pytest                       # unit + CLI tests, ~1.5 min, no models or network
 uv run --isolated --group test --python 3.11 pytest         # the oldest supported Python
 HF_HUB_OFFLINE=1 uv run --isolated --group test pytest -m real   # real models (after vidx setup)
-uvx ruff check src/ tests/
+uvx ruff@0.16.10 check src/ tests/
 sh -n vidx                                                  # the POSIX launcher
 ```
 

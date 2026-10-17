@@ -31,7 +31,7 @@ jobs:
         if: runner.os == 'Windows'
         run: choco install ffmpeg -y --no-progress
       - name: ruff
-        run: uvx ruff check src/ tests/
+        run: uvx ruff@0.16.10 check src/ tests/
       - name: launcher parses (POSIX sh)
         if: runner.os != 'Windows'
         run: sh -n vidx

@@ -423,7 +423,7 @@ Hugging Face при каждом запуске (`HF_HUB_OFFLINE=1` её отк�
 uv run --isolated --group test pytest                       # юнит- и CLI-тесты, ~1,5 мин, без моделей и сети
 uv run --isolated --group test --python 3.11 pytest         # самый старый поддерживаемый Python
 HF_HUB_OFFLINE=1 uv run --isolated --group test pytest -m real   # с настоящими моделями (после vidx setup)
-uvx ruff check src/ tests/
+uvx ruff@0.16.10 check src/ tests/
 sh -n vidx                                                  # POSIX-запускалка
 ```
 
