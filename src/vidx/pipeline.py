@@ -21,6 +21,7 @@ from vidx.options import LANG_RE
 from vidx.state import OutDir
 
 VOSK_URL = "https://alphacephei.com/vosk/models/"
+DOWNLOAD_TIMEOUT_S = 60  # a server silent this long (to connect, or between two reads) fails the download
 ARG_CHARS = 24000  # Windows command lines are limited to 32767 characters: OCR runs in batches below this
 
 
@@ -90,7 +91,8 @@ def fetch_vosk(name, models, base_url=VOSK_URL):
     tmp = tempfile.mkdtemp(prefix=".tmp.", dir=models)
     try:
         archive = os.path.join(tmp, "m.zip")
-        with urllib.request.urlopen(base_url + name + ".zip") as r, open(archive, "wb") as f:
+        with urllib.request.urlopen(base_url + name + ".zip", timeout=DOWNLOAD_TIMEOUT_S) as r, \
+                open(archive, "wb") as f:
             shutil.copyfileobj(r, f, 1 << 20)
         root = os.path.realpath(tmp)
         with zipfile.ZipFile(archive) as z:
@@ -103,8 +105,9 @@ def fetch_vosk(name, models, base_url=VOSK_URL):
             raise ValueError(f"no {name}/ in the archive")
         os.replace(os.path.join(tmp, name), os.path.join(models, name))
         return True
-    except (OSError, ValueError, zipfile.BadZipFile) as e:
-        warn(f"Vosk model {name}: download failed ({e})")
+    except (OSError, ValueError, zipfile.BadZipFile) as e:  # a timeout: TimeoutError, or (connecting) in URLError
+        timed_out = isinstance(e, TimeoutError) or isinstance(getattr(e, "reason", None), TimeoutError)
+        warn(f"Vosk model {name}: download failed ({f'no answer for {DOWNLOAD_TIMEOUT_S} s' if timed_out else e})")
         return False
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

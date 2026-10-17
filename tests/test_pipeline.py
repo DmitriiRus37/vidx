@@ -122,3 +122,23 @@ def test_the_url_goes_to_ytdlp_as_text(tmp_path, monkeypatch):
     with pytest.raises(Fatal, match="could not read the video id"):
         run.download()
     assert calls[0][-1] == "https://example.com/café" and type(calls[0][-1]) is jobs.Text
+
+
+def test_vosk_download_gives_up_on_a_silent_server(tmp_path, monkeypatch, capsys):
+    """urlopen without a timeout waits forever for a server that accepts the connection and never answers (a
+    stuck proxy): vidx setup or a run hung on the Vosk download."""
+    import socket
+    import time
+
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)  # never accepted: the connection is made, no answer ever comes
+    monkeypatch.setattr(pipeline, "DOWNLOAD_TIMEOUT_S", 1)
+    try:
+        t0 = time.monotonic()
+        url = f"http://127.0.0.1:{server.getsockname()[1]}/"
+        assert not pipeline.fetch_vosk("vosk-model-xx", str(tmp_path / "models"), url)
+        assert time.monotonic() - t0 < 10
+    finally:
+        server.close()
+    assert "no answer for 1 s" in capsys.readouterr().err
