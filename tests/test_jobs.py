@@ -406,6 +406,35 @@ def test_the_orchestrator_waits_in_slices():
     assert found == []
 
 
+def test_programs_start_only_through_jobs():
+    """CLAUDE.md: every program runs through vidx.jobs (own process group, killed on Ctrl-C, waited for in slices).
+    setup's device probes and nvidia-smi, and the registry's `uv tool dir`, ran with subprocess.run instead."""
+    import ast
+
+    from helpers import ROOT
+
+    sources = [p for p in sorted((ROOT / "src" / "vidx").glob("*.py")) if p.name != "jobs.py"]
+    found = [f"{path.name}:{node.lineno}" for path in sources
+             for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+             and isinstance(node.func.value, ast.Name) and node.func.value.id == "subprocess"
+             and node.func.attr in ("run", "Popen", "call", "check_call", "check_output")]
+    assert found == []
+
+
+def test_output_reads_both_streams_and_kills_a_program_past_its_timeout(tmp_path):
+    script = "import sys; sys.stdout.buffer.write(b'caf\\xc3\\xa9\\n'); sys.stderr.write('warn\\n'); sys.exit(3)"
+    assert jobs.output([*PY, script]) == (3, "café\n", "warn\n")
+    pid_file, before = tmp_path / "pid", set(jobs._live)
+    t0 = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        jobs.output([*PY, "import os,sys,time; open(sys.argv[1],'w').write(str(os.getpid())); time.sleep(60)",
+                     str(pid_file)], timeout=2)
+    assert time.monotonic() - t0 < 15
+    assert not alive_or_zombie(int(pid_file.read_text(encoding="utf-8")))
+    assert set(jobs._live) <= before  # unregistered
+
+
 def test_wait_returns_the_exit_status_after_slices():
     slices = []
 

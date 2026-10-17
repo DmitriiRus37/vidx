@@ -280,5 +280,5 @@ def test_runs_find_their_tools_by_full_path(monkeypatch):
 
 def test_no_nvidia_smi_in_path_means_no_gpu(monkeypatch):
     monkeypatch.setattr(setup.paths, "which", lambda name, *a: None)
-    monkeypatch.setattr(setup.subprocess, "run", lambda *a, **k: pytest.fail("ran a bare nvidia-smi"))
+    monkeypatch.setattr(setup.jobs, "output", lambda *a, **k: pytest.fail("ran a bare nvidia-smi"))
     assert setup.nvidia_gpus() == []

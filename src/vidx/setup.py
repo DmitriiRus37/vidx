@@ -42,11 +42,10 @@ def nvidia_gpus():
     if not smi:
         return []
     try:
-        r = subprocess.run([smi, "--query-gpu=name", "--format=csv,noheader"], capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=20)
+        rc, out, _ = jobs.output([smi, "--query-gpu=name", "--format=csv,noheader"], timeout=20)
     except (OSError, subprocess.SubprocessError):
         return []
-    return [x.strip() for x in r.stdout.splitlines() if x.strip()] if r.returncode == 0 else []
+    return [x.strip() for x in out.splitlines() if x.strip()] if rc == 0 else []
 
 
 class Plan:
@@ -282,11 +281,10 @@ def execute(plan, rt):
 def report_devices(plan):
     for name, argv in plan.device_probes():
         try:
-            r = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                               timeout=PROBE_TIMEOUT_S)
-            why = (r.stderr.strip().splitlines() or ["?"])[-1]
-            dev = r.stdout.strip() if r.returncode == 0 else f"unknown ({why})"
-        except subprocess.TimeoutExpired:  # killed by run(); the report and the other probes go on
+            rc, out, err = jobs.output(argv, timeout=PROBE_TIMEOUT_S)
+            why = (err.strip().splitlines() or ["?"])[-1]
+            dev = out.strip() if rc == 0 else f"unknown ({why})"
+        except subprocess.TimeoutExpired:  # killed by jobs.output; the report and the other probes go on
             dev = f"unknown (timed out after {PROBE_TIMEOUT_S} s)"
         except OSError as e:
             dev = f"unknown ({e})"

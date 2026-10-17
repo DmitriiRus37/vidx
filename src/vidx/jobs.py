@@ -133,6 +133,26 @@ def capture(argv, quiet=False):
     return p.returncode, out.decode("utf-8", "replace")
 
 
+def output(argv, timeout=None, env=None):
+    """Run a program (registered for Ctrl-C), return (exit status, stdout, stderr), both read as UTF-8 (vidx's own
+    lib scripts, -X utf8). Past timeout seconds its tree is killed and subprocess.TimeoutExpired raised."""
+    p = spawn(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    deadline = None if timeout is None else time.monotonic() + timeout
+    try:
+        while True:
+            try:
+                out, err = p.communicate(timeout=POLL_S)
+                break
+            except subprocess.TimeoutExpired:
+                if deadline is not None and time.monotonic() > deadline:
+                    kill_tree(p.pid)
+                    communicate(p)  # the killed tree has closed the pipes
+                    raise subprocess.TimeoutExpired(argv, timeout) from None
+    finally:
+        _forget(p)
+    return p.returncode, out.decode("utf-8", "replace"), err.decode("utf-8", "replace")
+
+
 def reencodes(stream):
     """Whether a program's stderr must go through vidx to reach this stream: a terminal that is not UTF-8 (a Latin-1
     locale on Linux or macOS), where the UTF-8 that vidx's Python children write would show garbled. Anywhere else
