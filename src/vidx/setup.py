@@ -255,10 +255,12 @@ def execute(plan, rt):
             if step.kind == "swift":
                 if step.argv[0] == "ocr":
                     log("compiling Swift helpers (Vision OCR, SpeechTranscriber)")
-                rt.build_swift(step.argv[0])
+                if not rt.build_swift(step.argv[0]):  # it has said why (no swiftc, a compile error)
+                    raise Fatal(f"setup failed: could not compile the Swift helper {step.argv[0]}")
                 continue
             if step.kind == "vosk":
-                rt.fetch_vosk(step.argv[0])
+                if not rt.fetch_vosk(step.argv[0]):  # it has said why
+                    raise Fatal(f"setup failed: could not download the Vosk model {step.argv[0]}")
                 continue
             argv = argv_of(step, tmp)
             if argv is None:

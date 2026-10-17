@@ -228,3 +228,32 @@ def test_a_gpu_change_replaces_torch_and_onnxruntime(tmp_path):
 def test_macos_torch_has_no_local_version():
     cmds = commands(plan("darwin"))
     assert any("torch==2.14.1 " in c + " " for c in cmds) and not any("+cpu" in c for c in cmds)
+
+
+class FakeRuntime:
+    def __init__(self, swift=True, vosk=True):
+        self.platform, self.home, self.swift, self.vosk = "darwin", "/h", swift, vosk
+        self.registry = types.SimpleNamespace(bin="/h/bin", models="/h/models")
+
+    def build_swift(self, name):
+        return self.swift
+
+    def fetch_vosk(self, name):
+        return self.vosk
+
+
+@pytest.mark.parametrize("rt, why", [(FakeRuntime(swift=False), "could not compile the Swift helper ocr"),
+                                     (FakeRuntime(vosk=False), "could not download the Vosk model vosk-model-ru-0.42")])
+def test_setup_fails_when_a_helper_or_model_is_missing(monkeypatch, capsys, rt, why):
+    """A failed Swift build or Vosk download was ignored: vidx setup said "setup done" and exited 0, and the runs
+    then lacked OCR or Vosk."""
+    from vidx import cli, pipeline
+
+    steps = [setup.Step("swift", ["ocr"]), setup.Step("vosk", ["vosk-model-ru-0.42"])]
+    fake_plan = types.SimpleNamespace(steps=steps, missing=[], gpus=[], device_probes=lambda: [], platform="darwin")
+    monkeypatch.setattr(setup, "Plan", lambda *a, **k: fake_plan)
+    monkeypatch.setattr(pipeline, "Runtime", lambda: rt)
+    monkeypatch.setattr(setup.jobs, "install_interrupt_handlers", lambda: None)
+    assert cli.main(["setup"]) == 1
+    out, err = capsys.readouterr()
+    assert why in err and "setup done" not in err + out
