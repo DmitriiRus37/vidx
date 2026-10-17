@@ -3,6 +3,7 @@ package, of a checkout and of an installed copy."""
 import ntpath
 import os
 import posixpath
+import shutil
 import sys
 from pathlib import Path
 
@@ -49,3 +50,31 @@ def venv_python(venv, platform=None):
     if (platform or platform_of()) == "win32":
         return ntpath.join(venv, "Scripts", "python.exe")
     return posixpath.join(venv, "bin", "python")
+
+
+def which(name, platform=None, env=None):
+    """The full path of a program in PATH, else None. On Windows only PATH, never the current directory: Windows'
+    own search (CreateProcess with a bare name) and shutil.which look there first, so an ffmpeg.exe in the folder
+    vidx runs in would run instead of the installed one. vidx starts its programs by the path found here."""
+    env = os.environ if env is None else env
+    if (platform or platform_of()) != "win32":
+        return shutil.which(name, path=env.get("PATH", os.defpath))
+    exts = [e for e in env.get("PATHEXT", ".COM;.EXE;.BAT;.CMD").split(";") if e]
+    names = [name] if os.path.splitext(name)[1] else [name + x for e in exts for x in dict.fromkeys((e, e.lower()))]
+    for folder in env.get("PATH", "").split(os.pathsep):
+        folder = folder.strip('"')
+        if not folder or not os.path.isabs(folder):  # "" and "." (or any relative entry) mean the current directory
+            continue
+        for n in names:
+            path = os.path.join(folder, n)
+            if os.path.isfile(path):
+                return path
+    return None
+
+
+def system_program(name, platform=None, env=None):
+    """A program of Windows itself (taskkill) by its full path in System32, not searched for; elsewhere which()."""
+    env = os.environ if env is None else env
+    if (platform or platform_of()) == "win32":
+        return ntpath.join(env.get("SystemRoot") or r"C:\Windows", "System32", name + ".exe")
+    return which(name, platform, env) or name

@@ -1,4 +1,5 @@
 """Where vidx keeps its environments and models, per OS (vidx.paths)."""
+import os
 from pathlib import PureWindowsPath
 
 import pytest
@@ -44,3 +45,37 @@ def test_platform_names():
     assert paths.platform_of("win32") == "win32"
     assert paths.platform_of("cygwin") == "linux"  # POSIX paths and signals
     assert paths.platform_of("freebsd14") == "linux"  # POSIX without the macOS engines
+
+
+def exe(folder, name):
+    folder.mkdir(exist_ok=True)
+    f = folder / name
+    f.write_bytes(b"MZ")
+    f.chmod(0o755)
+    return str(f)
+
+
+def test_windows_programs_are_not_taken_from_the_current_directory(tmp_path, monkeypatch):
+    """Windows (CreateProcess, and shutil.which) looks in the current directory before PATH: an ffmpeg.exe lying in
+    the folder vidx runs in (a download folder) would run instead of the installed one. paths.which looks in PATH
+    only, and the programs are started by that absolute path."""
+    cwd, tools = tmp_path / "Downloads", tmp_path / "tools"
+    exe(cwd, "ffmpeg.EXE")
+    monkeypatch.chdir(cwd)
+    env = {"PATH": os.pathsep.join(["", ".", str(tools)]), "PATHEXT": ".COM;.EXE"}
+    assert paths.which("ffmpeg", "win32", env) is None  # only in the current directory: not found
+    want = exe(tools, "ffmpeg.EXE")
+    assert paths.which("ffmpeg", "win32", env) == want
+    assert paths.which("ffmpeg.exe", "win32", env) in (want, str(tools / "ffmpeg.exe"))  # with its extension
+
+
+def test_posix_which_is_shutils(tmp_path):
+    tools = tmp_path / "bin"
+    want = exe(tools, "ffmpeg")
+    assert paths.which("ffmpeg", "linux", {"PATH": str(tools)}) == want
+    assert paths.which("nothing-here", "linux", {"PATH": str(tools)}) is None
+
+
+def test_windows_system_programs_by_full_path():
+    win = paths.system_program("taskkill", "win32", {"SystemRoot": r"D:\Win"})
+    assert PureWindowsPath(win) == PureWindowsPath(r"D:\Win\System32\taskkill.exe")

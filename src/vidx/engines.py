@@ -112,8 +112,8 @@ class Registry:
     def uv_tool_dir(self):
         if self._uv_tool_dir is None:
             try:
-                r = subprocess.run(["uv", "tool", "dir"], capture_output=True, text=True, encoding="utf-8",
-                                   errors="replace")
+                r = subprocess.run([paths.which("uv") or "uv", "tool", "dir"], capture_output=True, text=True,
+                                   encoding="utf-8", errors="replace")
                 self._uv_tool_dir = r.stdout.strip()
             except OSError:  # no uv: vidx setup says how to install it
                 self._uv_tool_dir = ""

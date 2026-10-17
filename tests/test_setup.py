@@ -257,3 +257,28 @@ def test_setup_fails_when_a_helper_or_model_is_missing(monkeypatch, capsys, rt, 
     assert cli.main(["setup"]) == 1
     out, err = capsys.readouterr()
     assert why in err and "setup done" not in err + out
+
+
+def test_setup_runs_its_programs_by_full_path(monkeypatch):
+    """uv, ffmpeg (warm-up) and the rest are looked up in PATH by vidx (paths.which: on Windows not in the current
+    directory) and started by that path; one that is not there stops setup."""
+    ran = []
+    monkeypatch.setattr(setup.paths, "which", lambda name, *a: {"uv": "/opt/uv/uv"}.get(name))
+    monkeypatch.setattr(setup.jobs.Context, "call", lambda self, argv, **k: ran.append(argv) or 0)
+    steps = [setup.Step("pip", ["uv", "pip", "install", "x"]), setup.Step("warm", ["ffmpeg", "-i", "x"])]
+    with pytest.raises(setup.Fatal, match="ffmpeg not found in PATH"):
+        setup.execute(types.SimpleNamespace(steps=steps), FakeRuntime())
+    assert ran == [["/opt/uv/uv", "pip", "install", "x"]]
+
+
+def test_runs_find_their_tools_by_full_path(monkeypatch):
+    from vidx import pipeline
+
+    monkeypatch.setattr(pipeline.paths, "which", lambda name, *a: f"/opt/{name}")
+    assert pipeline.Runtime(env={}).which("ffmpeg") == "/opt/ffmpeg"
+
+
+def test_no_nvidia_smi_in_path_means_no_gpu(monkeypatch):
+    monkeypatch.setattr(setup.paths, "which", lambda name, *a: None)
+    monkeypatch.setattr(setup.subprocess, "run", lambda *a, **k: pytest.fail("ran a bare nvidia-smi"))
+    assert setup.nvidia_gpus() == []

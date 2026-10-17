@@ -372,8 +372,9 @@ def test_windows_kill_tree_without_psutil_uses_taskkill(monkeypatch):
     calls = []
     monkeypatch.setattr(jobs, "psutil", None)
     monkeypatch.setattr(subprocess, "run", lambda argv, **kw: calls.append(argv))
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
     jobs.kill_tree(42, platform="win32")
-    assert calls == [["taskkill", "/PID", "42", "/T", "/F"]]
+    assert calls == [[r"C:\Windows\System32\taskkill.exe", "/PID", "42", "/T", "/F"]]  # not a taskkill in the cwd
 
 
 def test_interrupt_signals_per_platform():

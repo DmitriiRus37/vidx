@@ -62,18 +62,19 @@ class Runtime:
         return self.registry.helper_python
 
     def which(self, tool):
-        return shutil.which(tool)
+        return paths.which(tool)  # Windows: PATH only, not the current directory
 
     def build_swift(self, name):
         """name → <home>/bin/<name>, rebuilt when the .swift source is newer (macOS only)."""
         exe, src = os.path.join(self.registry.bin, name), paths.LIB / f"{name}.swift"
         if os.access(exe, os.X_OK) and os.path.getmtime(exe) > os.path.getmtime(src):
             return True
-        if not shutil.which("swiftc"):
+        swiftc = paths.which("swiftc")
+        if not swiftc:
             warn(f"swiftc not found (xcode-select --install): {name} unavailable")
             return False
         os.makedirs(self.registry.bin, exist_ok=True)
-        return jobs.Context().call(["swiftc", "-O", "-o", exe, str(src)]) == 0
+        return jobs.Context().call([swiftc, "-O", "-o", exe, str(src)]) == 0
 
     def fetch_vosk(self, name, base_url=VOSK_URL):
         return fetch_vosk(name, self.registry.models, base_url)
@@ -167,7 +168,7 @@ class Run:
     # --- the run ---------------------------------------------------------------------------------------------
     def main(self):
         o = self.o
-        self.ffmpeg, self.ffprobe = self.need("ffmpeg"), self.rt.which("ffprobe") or "ffprobe"
+        self.ffmpeg, self.ffprobe = self.need("ffmpeg"), self.need("ffprobe")  # full paths (Windows: not the cwd's)
         if not os.path.isfile(self.rt.helper_python):
             raise Fatal("helper venv missing — run: vidx setup")
         self.source()

@@ -60,7 +60,9 @@ Always `--isolated`: without it uv installs into `.venv`, which is vidx's own he
   (how to install), `paths.py` (where) and the engine runners; the pipeline and the output files are the
   same everywhere. An engine runner takes the macOS tool's command line and writes its JSON keys.
 - **Windows**: every text `open()` names `encoding="utf-8"` and writes `newline="\n"` (a test checks);
-  no symlinks required, no shell; process groups via `jobs.spawn`; paths via `os.path`/`paths`.
+  no symlinks required, no shell; process groups via `jobs.spawn`; paths via `os.path`/`paths`; programs started
+  by full path from `paths.which` (PATH only: Windows' own search tries the current directory first), Windows'
+  own tools via `paths.system_program` (System32).
 - **Any locale** (the `latin-1` job): a free-text argument to a program (prompt, regex, URL) is a `jobs.Text`
   (UTF-8 in every locale), a path a plain str (the locale's bytes); every lib script run by path calls
   `common.unix_stderr()` first, and data on stdout goes through `common.unix_stdout()` (UTF-8 + LF); vidx's

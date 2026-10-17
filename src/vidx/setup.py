@@ -15,7 +15,6 @@ Windows, DirectML for parakeet only with --gpu directml (a VM may have no Direct
 """
 import os
 import shlex
-import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
@@ -39,8 +38,11 @@ class Step:
 
 def nvidia_gpus():
     """Names of the NVIDIA GPUs the driver sees ([] without nvidia-smi)."""
+    smi = paths.which("nvidia-smi")  # Windows: PATH only, not the current directory
+    if not smi:
+        return []
     try:
-        r = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"], capture_output=True, text=True,
+        r = subprocess.run([smi, "--query-gpu=name", "--format=csv,noheader"], capture_output=True, text=True,
                            encoding="utf-8", errors="replace", timeout=20)
     except (OSError, subprocess.SubprocessError):
         return []
@@ -50,7 +52,7 @@ def nvidia_gpus():
 class Plan:
     """Everything setup would do on a platform, as data (so --dry-run and the tests see it)."""
 
-    def __init__(self, platform, home, which=shutil.which, gpus=None, gpu="auto", env=None, registry=None,
+    def __init__(self, platform, home, which=paths.which, gpus=None, gpu="auto", env=None, registry=None,
                  models=True):
         self.platform, self.home, self.which, self.env = platform, home, which, os.environ if env is None else env
         self.gpus = nvidia_gpus() if gpus is None else gpus
@@ -265,6 +267,11 @@ def execute(plan, rt):
             argv = argv_of(step, tmp)
             if argv is None:
                 continue
+            if not os.path.isabs(argv[0]):  # uv, ffmpeg, mlx_whisper: run by full path (Windows: not the cwd's)
+                found = paths.which(argv[0])
+                if not found:
+                    raise Fatal(f"setup failed: {argv[0]} not found in PATH")
+                argv[0] = found
             if step.kind == "warm" and step.what:
                 log(f"warming the model cache: {step.what}")
             log(show(Step(step.kind, argv)))

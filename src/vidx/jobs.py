@@ -208,8 +208,9 @@ def kill_trees(pids, platform=None):
             with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
                 p.kill()
     elif platform == "win32":
+        taskkill = paths.system_program("taskkill", platform)  # System32's, not one in the current directory
         for pid in pids:
-            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], stdout=subprocess.DEVNULL,
+            subprocess.run([taskkill, "/PID", str(pid), "/T", "/F"], stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL)
     else:
         def group_alive(pid):
