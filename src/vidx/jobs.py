@@ -37,7 +37,7 @@ _interrupted = threading.Event()
 
 
 class Interrupted(BaseException):
-    """Ctrl-C, SIGTERM or Ctrl-Break: kill everything, exit 130."""
+    """Ctrl-C, SIGTERM, SIGHUP (POSIX) or Ctrl-Break: kill everything, exit 130."""
 
 
 @dataclass
@@ -221,13 +221,15 @@ def interrupt_signals(platform=None):
     sigs = [signal.SIGINT, signal.SIGTERM]
     if (platform or paths.platform_of()) == "win32":
         sigs.append(getattr(signal, "SIGBREAK", 21))  # Ctrl-Break
+    elif hasattr(signal, "SIGHUP"):  # the terminal closed: the engines, in sessions of their own, are not told
+        sigs.append(signal.SIGHUP)
     return sigs
 
 
 def install_interrupt_handlers():
-    """Ctrl-C / SIGTERM / Ctrl-Break raise Interrupted in the main thread, once: a signal that comes while vidx is
-    already shutting down (kill_all waits up to KILL_WAIT_S) is ignored. A signal ignored when vidx started (e.g. a
-    background job of a non-interactive shell) stays ignored, as bash's trap did."""
+    """Ctrl-C / SIGTERM / SIGHUP / Ctrl-Break raise Interrupted in the main thread, once: a signal that comes while
+    vidx is already shutting down (kill_all waits up to KILL_WAIT_S) is ignored. A signal ignored when vidx started
+    (e.g. a background job of a non-interactive shell) stays ignored, as bash's trap did."""
     def handler(signum, frame):
         if _interrupted.is_set():  # shutting down already: a second Ctrl-C must not break off the kill
             return

@@ -152,8 +152,9 @@ ordered so GPU and CPU work interleave: whisper (GPU) · vosk (CPU) · frames + 
 parakeet · apple · turbo. So `-j 2` already overlaps the slowest GPU and CPU jobs, and `-j 3` adds
 the frames. With `-j > 1` each job's output goes to `logs/<job>.log` and the terminal only shows
 start / done / failure (with the last lines of the log). In mixed runs parakeet and the region split
-run before the queue, because GigaAM and whisper need the regions. Ctrl-C (Ctrl-Break on Windows) stops
-every running job together with the processes it started.
+run before the queue, because GigaAM and whisper need the regions. Ctrl-C (Ctrl-Break on Windows), closing
+the terminal (macOS, Linux) or an unexpected error stops every running job together with the processes it
+started; a second Ctrl-C while vidx stops them is ignored.
 
 A failed job does not stop the run: the rest is merged, the failures are listed at the end and vidx
 exits with status 3.

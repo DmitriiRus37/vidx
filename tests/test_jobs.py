@@ -305,7 +305,9 @@ def test_windows_kill_tree_without_psutil_uses_taskkill(monkeypatch):
 def test_interrupt_signals_per_platform():
     import signal
 
-    assert jobs.interrupt_signals("linux") == [signal.SIGINT, signal.SIGTERM]
+    if os.name != "nt":  # the terminal closed: the engines are in their own sessions and get no SIGHUP themselves
+        assert jobs.interrupt_signals("linux") == jobs.interrupt_signals("darwin") == [
+            signal.SIGINT, signal.SIGTERM, signal.SIGHUP]
     names = [getattr(s, "name", s) for s in jobs.interrupt_signals("win32")]
     assert names[:2] == ["SIGINT", "SIGTERM"] and names[2] in ("SIGBREAK", 21)
 

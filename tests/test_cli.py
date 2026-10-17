@@ -194,6 +194,25 @@ def test_a_second_ctrl_c_does_not_stop_the_shutdown(tmp_path, jobs):
         kill_leftovers(p, pids)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+def test_closing_the_terminal_stops_everything(tmp_path):
+    """SIGHUP (the terminal closed) reaches vidx only: the engines run in sessions of their own, so vidx must kill
+    them, as on Ctrl-C."""
+    import os
+    import signal
+    import time
+
+    p, pids = start_vidx_posix(tmp_path, 2, {})
+    try:
+        os.kill(p.pid, signal.SIGHUP)
+        _, err = p.communicate(timeout=15)
+        assert p.returncode == 130, err
+        time.sleep(0.5)
+        assert all_gone(pids)
+    finally:
+        kill_leftovers(p, pids)
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows console events")
 @pytest.mark.parametrize("jobs", [1, 2])
 def test_ctrl_break_stops_everything_on_windows(tmp_path, jobs):
