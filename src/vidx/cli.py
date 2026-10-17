@@ -1,7 +1,8 @@
 """vidx command line: help, find, setup and a run (the default command). Exit status: 0 all jobs succeeded,
-3 some jobs failed (the rest is merged anyway), 1 usage or setup error, 130 interrupted."""
+3 some jobs failed (the rest is merged anyway), 1 usage or setup error or an unexpected error, 130 interrupted."""
 import os
 import sys
+import traceback
 
 from vidx import jobs, log, paths, texts
 from vidx.options import APPLE_TIMEOUT_DEFAULT, ShowHelp, Usage, parse_run
@@ -97,7 +98,16 @@ def main(argv=None):
         return 1
     except jobs.Interrupted:
         log.warn("interrupted")  # first: the kill may take KILL_WAIT_S
-        jobs.kill_all()
-        sys.stdout.flush()
-        sys.stderr.flush()
-        os._exit(130)  # worker threads may still be waiting on killed programs
+        return stop(130)
+    except Exception:  # noqa: BLE001 — a bug or the OS (disk full): no engine may outlive vidx
+        traceback.print_exc()
+        log.error("unexpected error (above); stopping every program vidx started")
+        return stop(1)
+
+
+def stop(code):
+    """Kill every running program tree and exit now: worker threads may still be waiting on killed programs."""
+    jobs.kill_all()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)

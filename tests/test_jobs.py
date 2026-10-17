@@ -85,6 +85,42 @@ def test_cached_and_stamped(tmp_path, out, capsys):
     assert "==> eng [ru]\n" in err and "==> eng [ru]: done in" in err and "==> eng [ru]: cached" in err
 
 
+def test_an_error_in_one_job_stops_the_others(tmp_path, out):
+    """An unexpected exception in a -j N job (OSError: no space left, writing a stamp) went up to cli.main, which
+    killed only on Ctrl-C: vidx then waited for the other jobs' threads, and their engines kept running."""
+    pid_file = tmp_path / "pid"
+    slow = jobs.Job("slow", str(tmp_path / "out" / "slow.json"), "p", jobs.command(
+        [*PY, "import os,sys,time; open(sys.argv[1],'w').write(str(os.getpid())); time.sleep(60)", str(pid_file)]))
+
+    def broken(ctx):
+        deadline = time.time() + 20
+        while not (pid_file.exists() and pid_file.read_text(encoding="utf-8")):
+            assert time.time() < deadline
+            time.sleep(0.05)
+        raise OSError(28, "No space left on device")
+
+    t0 = time.monotonic()
+    with pytest.raises(OSError, match="No space left"):
+        jobs.run_queue([jobs.Job("broken", "", "", broken), slow], 2, out)
+    assert time.monotonic() - t0 < 20
+    pid = int(pid_file.read_text(encoding="utf-8"))
+    deadline = time.time() + 5
+    while alive_or_zombie(pid) and time.time() < deadline:
+        time.sleep(0.05)
+    assert not alive_or_zombie(pid)
+    assert not (tmp_path / "out" / ".vidx" / "slow.json.params").exists()
+
+
+def alive_or_zombie(pid):
+    """Whether pid still runs (a killed child not yet reaped by its Popen counts as gone)."""
+    import psutil
+
+    try:
+        return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return False
+
+
 @pytest.mark.parametrize("label, name", [("GigaAM-v3 [ru]", "GigaAM-v3_ru_.log"), ("frames + OCR", "frames_OCR.log"),
                                          ("whisper large-v3 [en]", "whisper_large-v3_en_.log"),
                                          ("Vosk [ru] (CPU)", "Vosk_ru_CPU_.log"), ("Видео", "_.log")])
@@ -438,3 +474,33 @@ def test_engine_stderr_on_a_real_latin1_terminal(tmp_path):
     os.close(master)
     assert p.wait(timeout=30) == 0
     assert b"caf\xe9 ? ok" in shown, shown
+
+
+# --- cli.main's way out ---------------------------------------------------------------------------------------
+@pytest.mark.parametrize("exc, code", [(jobs.Interrupted(), 130), (OSError(28, "No space left on device"), 1)])
+def test_cli_kills_every_tree_on_any_exception(monkeypatch, capsys, exc, code):
+    """Ctrl-C and an unexpected error leave the same way: every program tree killed, then exit (130 or 1) without
+    waiting for worker threads."""
+    from vidx import cli
+
+    calls = []
+
+    def boom(args):
+        raise exc
+
+    class Exit(Exception):
+        pass
+
+    def fake_exit(c):
+        calls.append(("exit", c))
+        raise Exit
+
+    monkeypatch.setattr(cli, "dispatch", boom)
+    monkeypatch.setattr(jobs, "kill_all", lambda: calls.append(("kill_all",)))
+    monkeypatch.setattr(jobs, "install_interrupt_handlers", lambda: None)
+    monkeypatch.setattr(os, "_exit", fake_exit)
+    with pytest.raises(Exit):
+        cli.main(["x"])
+    assert calls == [("kill_all",), ("exit", code)]
+    err = capsys.readouterr().err
+    assert ("interrupted" in err) if code == 130 else ("No space left on device" in err and "unexpected error" in err)

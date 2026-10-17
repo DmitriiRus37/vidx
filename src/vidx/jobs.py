@@ -330,7 +330,8 @@ def run_queue(queue, n, out):
             done, pending = wait_futures(pending, timeout=POLL_S, return_when=FIRST_COMPLETED)
             for f in done:
                 f.result()
-    except BaseException:  # Ctrl-C: do not wait for the workers, whose programs are about to be killed
+    except BaseException:  # Ctrl-C, or an error in a job (OSError: disk full): stop the other jobs' programs too,
+        kill_all()  # else their threads would keep vidx waiting until each engine ends on its own
         pool.shutdown(wait=False, cancel_futures=True)
         raise
     pool.shutdown()
