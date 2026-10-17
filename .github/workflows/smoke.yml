@@ -5,8 +5,6 @@ on:
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
-  push:
-    branches: [review-fixes]  # temporary: the review fixes change setup and the device probes
 permissions:
   contents: read
 jobs:
