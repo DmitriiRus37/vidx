@@ -193,6 +193,29 @@ def test_kill_tree_kills_grandchildren(tmp_path, monkeypatch, with_psutil):
     assert not alive(grandchild)
 
 
+def test_a_program_started_while_vidx_is_interrupted_is_killed(monkeypatch):
+    """-j N: a worker thread inside Popen while the main thread runs kill_all() — the program is not yet in the
+    list kill_all() kills, and was left running. The window is widened by killing from inside Popen."""
+    started = []
+    real = subprocess.Popen
+
+    def popen_then_ctrl_c(*a, **kw):
+        p = real(*a, **kw)
+        started.append(p)
+        jobs.kill_all()  # Ctrl-C lands now: the program exists, spawn has not registered it yet
+        return p
+
+    monkeypatch.setattr(subprocess, "Popen", popen_then_ctrl_c)
+    monkeypatch.setattr(jobs, "_live", set())
+    try:
+        jobs.spawn([*PY, "import time; time.sleep(60)"])
+        assert started[0].wait(timeout=10) is not None
+    finally:
+        if started and started[0].poll() is None:
+            started[0].kill()
+            started[0].wait()
+
+
 def test_spawn_flags_per_platform(monkeypatch):
     seen = {}
 

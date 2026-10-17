@@ -90,8 +90,11 @@ def spawn(argv, platform=None, stdout=None, stderr=None, env=None):
     else:
         kw["start_new_session"] = True
     p = subprocess.Popen([os_arg(a, platform) for a in argv], **kw)
-    with _live_lock:
+    with _live_lock:  # kill_all sets _interrupted, then lists _live under this lock: p is in its list, or seen here
         _live.add(p)
+        late = _interrupted.is_set()
+    if late:  # started while vidx was being interrupted (another thread, -j N): kill_all may not have seen it
+        kill_tree(p.pid, platform)
     return p
 
 
