@@ -6,13 +6,10 @@ registry (vidx.engines), so the same code runs on macOS, Linux and Windows.
 """
 import glob
 import importlib.util
-import io
 import json
 import os
 import re
 import shutil
-import subprocess
-import sys
 import tempfile
 import urllib.request
 import zipfile
@@ -119,19 +116,6 @@ def remove_sources(out):
             os.remove(f)
 
 
-def capture(argv, quiet=False):
-    """Run a program (registered for Ctrl-C), return (exit status, stdout text); quiet: no stderr. A non-UTF-8
-    terminal gets the program's stderr re-encoded, after it ends (jobs.reencodes)."""
-    through = not quiet and jobs.reencodes(sys.stderr)
-    p = jobs.spawn(argv, stdout=subprocess.PIPE,
-                   stderr=subprocess.DEVNULL if quiet else subprocess.PIPE if through else None)
-    out, err = jobs.communicate(p)
-    jobs._forget(p)
-    if err:
-        jobs.relay(io.BytesIO(err), sys.stderr)
-    return p.returncode, out.decode("utf-8", "replace")
-
-
 def read_json(path, default=None):
     try:
         with open(path, encoding="utf-8") as f:
@@ -173,8 +157,8 @@ class Run:
         self.add(label, output, params, body)
 
     def has_stream(self, kind):
-        rc, out = capture([self.ffprobe, "-v", "error", "-select_streams", kind, "-show_entries", "stream=codec_type",
-                           "-of", "csv=p=0", self.src])
+        rc, out = jobs.capture([self.ffprobe, "-v", "error", "-select_streams", kind, "-show_entries",
+                                "stream=codec_type", "-of", "csv=p=0", self.src])
         return bool(out.strip())
 
     # --- the run ---------------------------------------------------------------------------------------------
@@ -220,7 +204,7 @@ class Run:
         ytdlp = [self.need("yt-dlp"), "--ignore-config", "--no-warnings", "--no-playlist"]
         out = o.out
         if not out:
-            rc, text = capture([*ytdlp, "--skip-download", "--print", "%(id)s", jobs.Text(o.input)])
+            rc, text = jobs.capture([*ytdlp, "--skip-download", "--print", "%(id)s", jobs.Text(o.input)])
             vid = re.sub(r"[^A-Za-z0-9_-]", "_", (text.splitlines() or [""])[0]) if rc == 0 else ""
             if not vid:
                 raise Fatal(f"could not read the video id of {o.input}")
@@ -279,8 +263,8 @@ class Run:
                     raise Fatal("audio extraction failed (ffmpeg)")
                 os.replace(tmp, self.audio)
                 self.out.stamp(self.audio, "16k-mono")
-            _, dur = capture([self.ffprobe, "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0",
-                              self.audio])
+            _, dur = jobs.capture([self.ffprobe, "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0",
+                                   self.audio])
             d = int(dur.strip().split(".")[0] or 0)
             log(f"duration: {d // 60}:{d % 60:02d}")
             if o.lang == "auto":
@@ -456,7 +440,7 @@ class Run:
     def apple_supports(self, locale):
         """Asks apple_asr once per run which locales it supports."""
         if self.apple_locales is None:
-            _, text = capture(self.reg.get("apple").argv("--locales"), quiet=True)
+            _, text = jobs.capture(self.reg.get("apple").argv("--locales"), quiet=True)
             self.apple_locales = next((line.split()[1:] for line in text.splitlines() if line.startswith("supported:")),
                                       [])
         return locale in self.apple_locales

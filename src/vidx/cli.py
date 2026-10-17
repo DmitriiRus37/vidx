@@ -34,12 +34,12 @@ def show(text):
 def find(args):
     """vidx find <out-dir> <regex> [source]: lib/find.py (standard library only) in the helper Python. Its
     hits (UTF-8) are printed by vidx, so a terminal or a redirect gets them as it gets vidx's messages."""
-    from vidx.pipeline import Runtime, capture
+    from vidx.pipeline import Runtime
 
     rt = Runtime()
     python = rt.helper_python if os.path.isfile(rt.helper_python) else sys.executable
     out, regex, *source = args  # the regex is text: UTF-8 in every locale (jobs.Text); the rest are file names
-    rc, hits = capture([python, str(paths.LIB / "find.py"), out, jobs.Text(regex), *source])
+    rc, hits = jobs.capture([python, str(paths.LIB / "find.py"), out, jobs.Text(regex), *source])
     sys.stdout.write(hits)
     sys.stdout.flush()
     return rc

@@ -8,6 +8,7 @@ thread waits for programs in POLL_S slices (wait, communicate): Windows runs the
 """
 import codecs
 import contextlib
+import io
 import locale
 import os
 import re
@@ -114,6 +115,19 @@ def communicate(p):
             return p.communicate(timeout=POLL_S)
         except subprocess.TimeoutExpired:
             continue
+
+
+def capture(argv, quiet=False):
+    """Run a program (registered for Ctrl-C), return (exit status, stdout text); quiet: no stderr. A non-UTF-8
+    terminal gets the program's stderr re-encoded, after it ends (reencodes)."""
+    through = not quiet and reencodes(sys.stderr)
+    err_to = subprocess.DEVNULL if quiet else subprocess.PIPE if through else None
+    p = spawn(argv, stdout=subprocess.PIPE, stderr=err_to)
+    out, err = communicate(p)
+    _forget(p)
+    if err:
+        relay(io.BytesIO(err), sys.stderr)
+    return p.returncode, out.decode("utf-8", "replace")
 
 
 def reencodes(stream):

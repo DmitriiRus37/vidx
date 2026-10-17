@@ -424,11 +424,9 @@ def test_engine_stderr_is_reencoded_for_a_non_utf8_terminal(monkeypatch):
 
 
 def test_captured_programs_stderr_is_reencoded_too(monkeypatch):
-    from vidx import pipeline
-
     tty = Terminal("latin-1")
     monkeypatch.setattr(sys, "stderr", tty)
-    assert pipeline.capture(CHILD) == (0, "")
+    assert jobs.capture(CHILD) == (0, "")
     assert tty.shown() == "café ? ok\n".encode("latin-1")
 
 

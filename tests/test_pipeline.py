@@ -116,7 +116,7 @@ def test_the_url_goes_to_ytdlp_as_text(tmp_path, monkeypatch):
     from vidx.options import parse_run
 
     calls = []
-    monkeypatch.setattr(pipeline, "capture", lambda argv, **k: calls.append(argv) or (1, ""))
+    monkeypatch.setattr(jobs, "capture", lambda argv, **k: calls.append(argv) or (1, ""))
     monkeypatch.setattr(pipeline.Runtime, "which", lambda self, tool: tool)
     run = pipeline.Run(parse_run(["https://example.com/café"]), pipeline.Runtime(env={}))
     with pytest.raises(Fatal, match="could not read the video id"):
