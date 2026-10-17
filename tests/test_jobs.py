@@ -233,6 +233,31 @@ def test_windows_kill_tree_with_psutil(monkeypatch):
     assert log == [("terminate", 11), ("terminate", 12), ("terminate", 10), ("wait", 3), ("kill", 12)]
 
 
+def test_several_trees_get_their_sigterm_first_and_one_wait(monkeypatch):
+    """kill_all with -j N: every tree is told to stop before vidx waits, and it waits KILL_WAIT_S once, not once
+    per tree."""
+    log = []
+    monkeypatch.setattr(jobs, "psutil", fake_psutil(log))
+    jobs.kill_trees([10, 20], platform="win32")
+    assert [e for e in log if e[0] == "wait"] == [("wait", 3)]
+    assert log.index(("terminate", 20)) < log.index(("wait", 3))
+
+
+def test_a_second_interrupt_is_ignored(monkeypatch):
+    """The handler raises Interrupted once; a Ctrl-C while vidx shuts down (kill_all) returns, so the kill
+    finishes."""
+    import signal
+
+    installed = {}
+    monkeypatch.setattr(signal, "signal", lambda s, h: installed.setdefault(s, h))
+    monkeypatch.setattr(signal, "getsignal", lambda s: signal.SIG_DFL)
+    jobs.install_interrupt_handlers()
+    handler = installed[signal.SIGINT]
+    with pytest.raises(jobs.Interrupted):
+        handler(signal.SIGINT, None)
+    assert handler(signal.SIGINT, None) is None
+
+
 def test_windows_kill_tree_without_psutil_uses_taskkill(monkeypatch):
     calls = []
     monkeypatch.setattr(jobs, "psutil", None)

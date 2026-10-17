@@ -96,8 +96,8 @@ def main(argv=None):
         log.error(str(e))
         return 1
     except jobs.Interrupted:
+        log.warn("interrupted")  # first: the kill may take KILL_WAIT_S
         jobs.kill_all()
-        log.warn("interrupted")
         sys.stdout.flush()
         sys.stderr.flush()
         os._exit(130)  # worker threads may still be waiting on killed programs

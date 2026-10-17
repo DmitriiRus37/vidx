@@ -37,3 +37,14 @@ def lid_backend():
     if not python.exists():
         pytest.skip("language-ID backend not installed (vidx setup)")
     return python, reg.lid.model
+
+
+@pytest.fixture(autouse=True)
+def _not_interrupted():
+    """vidx.jobs keeps "interrupted" process-wide (a run ends after it); a test that sets it must not stop
+    the programs of the next test."""
+    from vidx import jobs
+
+    jobs._interrupted.clear()
+    yield
+    jobs._interrupted.clear()

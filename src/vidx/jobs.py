@@ -160,17 +160,25 @@ def _forget(p):
 
 def kill_tree(pid, platform=None):
     """Terminate a process and all its descendants; kill what is still alive after KILL_WAIT_S."""
+    kill_trees([pid], platform)
+
+
+def kill_trees(pids, platform=None):
+    """kill_tree for several trees at once: every tree gets its SIGTERM first, then one wait of KILL_WAIT_S for
+    all of them, then a kill for what is left (not KILL_WAIT_S per tree)."""
     platform = platform or paths.platform_of()
     procs = []
     if psutil:
-        try:
-            parent = psutil.Process(pid)
-            procs = [*parent.children(recursive=True), parent]
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            procs = []
+        for pid in pids:
+            try:
+                parent = psutil.Process(pid)
+                procs += [*parent.children(recursive=True), parent]
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
     if platform != "win32":
-        with contextlib.suppress(OSError):  # ProcessLookupError, PermissionError
-            os.killpg(pid, signal.SIGTERM)  # the job's own process group (new session)
+        for pid in pids:
+            with contextlib.suppress(OSError):  # ProcessLookupError, PermissionError
+                os.killpg(pid, signal.SIGTERM)  # the job's own process group (new session)
     if psutil:
         for p in procs:
             with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
@@ -180,27 +188,33 @@ def kill_tree(pid, platform=None):
             with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
                 p.kill()
     elif platform == "win32":
-        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL)
+        for pid in pids:
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)
     else:
-        deadline = time.monotonic() + KILL_WAIT_S
-        while time.monotonic() < deadline:
+        def group_alive(pid):
             try:
                 os.killpg(pid, 0)
             except (ProcessLookupError, PermissionError, OSError):
-                return
+                return False
+            return True
+
+        deadline = time.monotonic() + KILL_WAIT_S
+        left = list(pids)
+        while left and time.monotonic() < deadline:
+            left = [pid for pid in left if group_alive(pid)]
             time.sleep(0.05)
-        with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
-            os.killpg(pid, signal.SIGKILL)
+        for pid in left:
+            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                os.killpg(pid, signal.SIGKILL)
 
 
 def kill_all():
+    """Kill every running program tree, all at once; from now on no job starts a program (call() → 130)."""
     _interrupted.set()
     with _live_lock:
         running = list(_live)
-    for p in running:
-        if p.poll() is None:
-            kill_tree(p.pid)
+    kill_trees([p.pid for p in running if p.poll() is None])
 
 
 def interrupt_signals(platform=None):
@@ -211,9 +225,13 @@ def interrupt_signals(platform=None):
 
 
 def install_interrupt_handlers():
-    """Ctrl-C / SIGTERM / Ctrl-Break raise Interrupted in the main thread. A signal ignored when vidx started
-    (e.g. a background job of a non-interactive shell) stays ignored, as bash's trap did."""
+    """Ctrl-C / SIGTERM / Ctrl-Break raise Interrupted in the main thread, once: a signal that comes while vidx is
+    already shutting down (kill_all waits up to KILL_WAIT_S) is ignored. A signal ignored when vidx started (e.g. a
+    background job of a non-interactive shell) stays ignored, as bash's trap did."""
     def handler(signum, frame):
+        if _interrupted.is_set():  # shutting down already: a second Ctrl-C must not break off the kill
+            return
+        _interrupted.set()
         raise Interrupted
 
     for s in interrupt_signals():

@@ -124,6 +124,76 @@ def test_ctrl_c_stops_everything(tmp_path, jobs):
             os.kill(int(f.name), 0)
 
 
+def start_vidx_posix(tmp_path, jobs, env):
+    """vidx in its own session with SIGINT at its default (see test_ctrl_c_stops_everything); waits until `jobs`
+    fake engines run. → (process, pid directory)."""
+    import signal
+    import subprocess
+    import time
+
+    from helpers import VIDX_CMD, vidx_env
+
+    p = subprocess.Popen([*VIDX_CMD, str(FIXTURE), "-l", "ru", "-o", "out", "-j", str(jobs)], cwd=tmp_path,
+                         env=vidx_env(tmp_path, {"VIDX_FAKE_DELAY": "60", **env}), start_new_session=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                         preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
+    pids = tmp_path / "fake-calls.pids"
+    deadline = time.time() + 30
+    while not (pids.exists() and len(list(pids.iterdir())) >= jobs) and time.time() < deadline:
+        time.sleep(0.1)
+    assert pids.exists(), "no fake engine started"
+    return p, pids
+
+
+def kill_leftovers(p, pids):
+    """A failed test must not leave vidx or a fake engine (in its own session) running."""
+    import contextlib
+    import os
+    import signal
+
+    with contextlib.suppress(OSError):
+        os.killpg(p.pid, signal.SIGKILL)
+    for f in pids.iterdir() if pids.exists() else []:
+        with contextlib.suppress(OSError):
+            os.killpg(int(f.name), signal.SIGKILL)
+    p.wait(timeout=10)
+
+
+def all_gone(pids):
+    import os
+
+    gone = []
+    for f in pids.iterdir():
+        try:
+            os.kill(int(f.name), 0)
+        except ProcessLookupError:
+            gone.append(f.name)
+    return len(gone) == len(list(pids.iterdir()))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+@pytest.mark.parametrize("jobs", [1, 2])
+def test_a_second_ctrl_c_does_not_stop_the_shutdown(tmp_path, jobs):
+    """Ctrl-C pressed again while vidx kills the engines (an engine that ignores SIGTERM keeps it waiting
+    KILL_WAIT_S) used to raise inside the kill: a traceback, exit 1, and the engine never got its SIGKILL."""
+    import os
+    import signal
+    import time
+
+    p, pids = start_vidx_posix(tmp_path, jobs, {"VIDX_FAKE_IGNORE_TERM": "1"})
+    try:
+        os.killpg(p.pid, signal.SIGINT)
+        time.sleep(1)  # inside kill_all's wait for the engines that ignore SIGTERM
+        os.kill(p.pid, signal.SIGINT)
+        _, err = p.communicate(timeout=15)
+        assert p.returncode == 130, err
+        assert "Traceback" not in err and err.count("interrupted") == 1
+        time.sleep(0.5)
+        assert all_gone(pids)
+    finally:
+        kill_leftovers(p, pids)
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows console events")
 @pytest.mark.parametrize("jobs", [1, 2])
 def test_ctrl_break_stops_everything_on_windows(tmp_path, jobs):

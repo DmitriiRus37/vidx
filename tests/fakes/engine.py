@@ -1,7 +1,8 @@
 """Fake engines for the vidx tests: same command lines and output files as the real ones, canned text.
 
 usage: engine.py <engine> <the real engine's arguments...>   (run in place of each engine: tests/fakes/hook.py)
-Waits VIDX_FAKE_DELAY seconds (its pid is in VIDX_FAKE_LOG.pids/ meanwhile), fails (exit 1, no
+Waits VIDX_FAKE_DELAY seconds (its pid is in VIDX_FAKE_LOG.pids/ meanwhile; VIDX_FAKE_IGNORE_TERM=1: it ignores
+SIGTERM, so only a SIGKILL stops it), fails (exit 1, no
 output) if the engine is in VIDX_FAKE_FAIL, logs the call as one file in the VIDX_FAKE_LOG directory (not
 lines appended to one file: with -j N fakes finish together, and Windows appends are not atomic). Output:
 VIDX_FAKE_DATA/<stem>.json if present, else one segment per clip (or for the whole audio) with the
@@ -10,6 +11,7 @@ text "Fake <engine> <lang>."
 import json
 import os
 import shutil
+import signal
 import sys
 import time
 import wave
@@ -59,6 +61,8 @@ def main():
     engine, args = sys.argv[1], sys.argv[2:]
     if engine == "whisper" and "turbo" in arg(args, "--model", ""):
         engine = "turbo"
+    if os.environ.get("VIDX_FAKE_IGNORE_TERM") == "1":  # an engine that does not stop on SIGTERM (POSIX)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
     t0 = time.time()
     query = args == ["--locales"]  # asked while queueing, not a job: no delay
     if os.environ.get("VIDX_FAKE_LOG") and not query:  # lets a test see which fakes are running now
