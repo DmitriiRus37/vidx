@@ -378,7 +378,8 @@ what it would do; `--no-models` skips the model downloads; `--gpu cuda|directml|
 choice (default: CUDA builds when `nvidia-smi` finds an NVIDIA GPU).
 
 What `vidx setup` installs (re-running it is safe; existing venvs are kept, a venv whose Python is gone
-is rebuilt; delete one to rebuild it):
+is rebuilt; delete one to rebuild it; after a GPU change or another `--gpu` the torch and onnxruntime builds
+are replaced):
 
 | Where | macOS | Linux, Windows |
 |---|---|---|

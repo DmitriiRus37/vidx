@@ -180,3 +180,51 @@ def test_device_script_names_a_device_from_any_directory(tmp_path):
     r = subprocess.run(setup.isolated(sys.executable, LIB / "device.py", "whisper"), cwd=tmp_path, capture_output=True,
                        text=True, encoding="utf-8", env={**os.environ, "VIDX_WHISPER_DEVICE": "cpu"}, timeout=60)
     assert (r.returncode, r.stdout) == (0, "cpu int8\n"), r.stderr
+
+
+def fake_uv(steps, venvs):
+    """What `uv pip` does to the packages of each venv ({venv: {name: version}}), as far as flavours go: a pin
+    without a local version (`torch==2.14.1`) is satisfied by any installed local build (`2.14.1+cpu`); a missing
+    package comes from the index (PyTorch's: a `+cpu` / `+cu126` build); --reinstall-package installs anew."""
+    for s in steps:
+        a = list(map(str, s.argv))
+        if a[:3] == ["uv", "pip", "uninstall"]:
+            venv = a[a.index("--python") + 1]
+            for name in a[a.index("--python") + 2:]:
+                venvs.setdefault(venv, {}).pop(name, None)
+        elif a[:3] == ["uv", "pip", "install"]:
+            venv = a[a.index("--python") + 1]
+            index = a[a.index("--index-url") + 1] if "--index-url" in a else ""
+            again = {a[i + 1] for i, x in enumerate(a) if x == "--reinstall-package"}
+            for req in (x for x in a[3:] if "==" in x or ">=" in x):
+                name, _, version = req.partition("==") if "==" in req else (req.split(">=")[0], "", "1.26.0")
+                have = venvs.setdefault(venv, {}).get(name)
+                if have and name not in again and ("+" in version and have == version
+                                                   or "+" not in version and have.split("+")[0] == version):
+                    continue
+                local = index.rsplit("/", 1)[-1] if "download.pytorch.org" in index else ""
+                venvs[venv][name] = version if "+" in version or not local else f"{version}+{local}"
+
+
+def test_a_gpu_change_replaces_torch_and_onnxruntime(tmp_path):
+    """vidx setup after an NVIDIA GPU appeared (or went): `torch==2.14.1` was satisfied by the 2.14.1+cpu already
+    there, so torch stayed a CPU build; and onnxruntime-gpu was installed next to onnxruntime in one venv (both
+    own the onnxruntime module). The builds are now pinned with their local version, and the other onnxruntime
+    flavours are removed first."""
+    venvs = {}
+    fake_uv(plan("linux", home=str(tmp_path)).steps, venvs)
+    onnx, giga = os.path.join(str(tmp_path), ".venv-onnx"), os.path.join(str(tmp_path), ".venv-giga")
+    assert venvs[giga]["torch"] == "2.14.1+cpu" and venvs[giga]["torchaudio"] == "2.11.0+cpu"
+    fake_uv(plan("linux", home=str(tmp_path), gpus=["NVIDIA T4"]).steps, venvs)
+    assert venvs[giga]["torch"] == "2.14.1+cu126" and venvs[giga]["torchaudio"] == "2.11.0+cu126"
+    assert [p for p in venvs[onnx] if p.startswith("onnxruntime")] == ["onnxruntime-gpu"]
+    fake_uv(plan("win32", home=str(tmp_path), gpu="directml").steps, venvs)
+    assert [p for p in venvs[onnx] if p.startswith("onnxruntime")] == ["onnxruntime-directml"]
+    fake_uv(plan("linux", home=str(tmp_path)).steps, venvs)
+    assert venvs[giga]["torch"] == "2.14.1+cpu"
+    assert [p for p in venvs[onnx] if p.startswith("onnxruntime")] == ["onnxruntime"]
+
+
+def test_macos_torch_has_no_local_version():
+    cmds = commands(plan("darwin"))
+    assert any("torch==2.14.1 " in c + " " for c in cmds) and not any("+cpu" in c for c in cmds)

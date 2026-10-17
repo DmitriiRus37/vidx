@@ -4,7 +4,8 @@ Per platform: checks the tools vidx runs (ffmpeg, ffprobe, deno, uv) and prints 
 missing one (it never runs a package manager: they need sudo or an elevated prompt, and differ by distro);
 creates the environments with uv; compiles the Swift helpers (macOS); downloads the Russian Vosk model and
 warms the model caches; reports the device each engine will use. Re-running is safe: existing venvs are kept
-(delete one to rebuild it), packages are re-checked.
+(delete one to rebuild it), packages are re-checked, and after a GPU change (or --gpu) the torch and onnxruntime
+builds are replaced.
 
   darwin       uv tools mlx-whisper, parakeet-mlx, yt-dlp; .venv; .venv-giga (MPS); Swift ocr + apple_asr
   linux/win32  uv tool yt-dlp; .venv; .venv-giga; .venv-whisper (faster-whisper, RapidOCR); .venv-onnx (onnx-asr)
@@ -113,12 +114,21 @@ class Plan:
                 s.append(Step("pip", ["uv", "pip", "install", "-q", "--python", self.venv(name), *index_args, *pkgs]))
 
         env(".venv", py, (install.HELPER_PKGS, None))
-        env(".venv-giga", py_giga, (install.TORCH, None if darwin else install.TORCH_INDEX[self.torch]),
-            (install.GIGA_PKGS, None))
-        if not darwin:
-            env(".venv-whisper", py_eng, (install.WHISPER_PKGS, None))
-            env(".venv-onnx", py_eng, (install.ONNX_PKGS + [install.ONNXRUNTIME[self.onnx]], None))
+        if darwin:
+            env(".venv-giga", py_giga, (install.TORCH, None), (install.GIGA_PKGS, None))
         else:
+            env(".venv-giga", py_giga, (install.torch_pins(self.torch), install.TORCH_INDEX[self.torch]),
+                (install.GIGA_PKGS, None))
+            env(".venv-whisper", py_eng, (install.WHISPER_PKGS, None))
+            # another GPU, another onnxruntime: the other flavours go first, and this one is reinstalled, as
+            # removing them also removed the files of the onnxruntime module they shared with it
+            ort = install.ONNXRUNTIME_PACKAGES[self.onnx]
+            others = [p for p in install.ONNXRUNTIME_PACKAGES.values() if p != ort]
+            env(".venv-onnx", py_eng)
+            s.append(Step("pip", ["uv", "pip", "uninstall", "-q", "--python", self.venv(".venv-onnx"), *others]))
+            s.append(Step("pip", ["uv", "pip", "install", "-q", "--python", self.venv(".venv-onnx"),
+                                  "--reinstall-package", ort, *install.ONNX_PKGS, install.ONNXRUNTIME[self.onnx]]))
+        if darwin:
             s += [Step("swift", ["ocr"]), Step("swift", ["apple_asr"])]
         if models:
             s.append(Step("vosk", ["vosk-model-ru-0.42"]))
