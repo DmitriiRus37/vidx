@@ -121,6 +121,45 @@ def alive_or_zombie(pid):
         return False
 
 
+def test_a_killed_jobs_output_is_never_stamped(tmp_path, out, capsys):
+    """A job whose programs were killed (Ctrl-C, or another job's error) may leave a partial output, even with a
+    body that reports success: it must not be stamped done, or the next run would take it as finished."""
+    target = tmp_path / "out" / "asr.json"
+
+    def body(ctx):
+        target.write_text("{partial", encoding="utf-8", newline="\n")
+        jobs.kill_all()  # what Ctrl-C does meanwhile
+        return True
+
+    jobs.run_job(jobs.Job("eng", str(target), "p", body), out, background=False)
+    assert not (tmp_path / "out" / ".vidx" / "asr.json.params").exists()
+    assert out.fresh(str(target), "p") and out.failed() == []
+    assert "eng: done" not in capsys.readouterr().err
+
+
+def test_after_kill_all_no_program_starts(monkeypatch):
+    """kill_all() marks vidx as stopping: a job that comes next must not start its program (it would outlive the
+    kill)."""
+    monkeypatch.setattr(jobs, "spawn", lambda *a, **k: pytest.fail("a program started after kill_all"))
+    jobs.kill_all()
+    assert jobs.Context().call(["x"]) == 130
+
+
+def test_call_returns_after_the_whole_stderr_is_shown(monkeypatch):
+    """A filtered stderr is copied by a thread; call() returns only when it has copied all of it, so the end of an
+    engine's output is neither lost nor shown after vidx's next message."""
+    class Slow(io.StringIO):
+        def write(self, text):
+            time.sleep(0.005)
+            return super().write(text)
+
+    shown = Slow()
+    monkeypatch.setattr(sys, "stderr", shown)
+    script = "import sys; sys.stderr.write(''.join(f'line {i}\\n' for i in range(100)))"
+    assert jobs.Context().call([*PY, script], drop="Fetching") == 0
+    assert shown.getvalue().splitlines()[-1] == "line 99"
+
+
 @pytest.mark.parametrize("label, name", [("GigaAM-v3 [ru]", "GigaAM-v3_ru_.log"), ("frames + OCR", "frames_OCR.log"),
                                          ("whisper large-v3 [en]", "whisper_large-v3_en_.log"),
                                          ("Vosk [ru] (CPU)", "Vosk_ru_CPU_.log"), ("Видео", "_.log")])
