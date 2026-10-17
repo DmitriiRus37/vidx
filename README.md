@@ -400,7 +400,8 @@ onnxruntime, which would overwrite the GPU one. `VIDX_PYTHON`, `VIDX_PYTHON_GIGA
 
 **NVIDIA GPU on Linux and Windows.** faster-whisper needs the CUDA 12 runtime with cuBLAS (Linux: the
 CUDA toolkit or the `nvidia-cublas-cu12` package; Windows: the CUDA 12 toolkit, or the cuBLAS DLLs on
-`PATH`); without them it says so and runs on the CPU. torch and onnxruntime-gpu bring their own CUDA
+`PATH`); without them it says so (`vidx setup` too, in its device report) and runs on the CPU, language ID
+included. torch and onnxruntime-gpu bring their own CUDA
 libraries. `VIDX_WHISPER_DEVICE`, `VIDX_ONNX_PROVIDER` and `VIDX_GIGAAM_DEVICE` force a device.
 
 Models are downloaded from their publishers and come under their own licenses; check them before

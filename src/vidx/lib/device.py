@@ -11,11 +11,45 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common import unix_stderr  # noqa: E402 — after the line above
 
 
+def cuda_libraries(platform=None):
+    """The CUDA 12 library CTranslate2 (whisper, turbo, language ID) loads when a model first runs on the GPU
+    (cuDNN is optional since CTranslate2 4.6.3)."""
+    return ["cublas64_12.dll"] if (platform or sys.platform) == "win32" else ["libcublas.so.12"]
+
+
+CUDA_LIBRARIES = cuda_libraries()
+
+
+def load_library(name):
+    """Load a shared library the way CTranslate2 does (Windows: the standard search, PATH included)."""
+    import ctypes
+
+    return ctypes.CDLL(name, winmode=0) if sys.platform == "win32" else ctypes.CDLL(name)
+
+
+def whisper_device():
+    """The device faster-whisper will run on: CTranslate2 counts the GPUs without loading the CUDA libraries, so
+    they are loaded here; without them whisper_fw falls back to the CPU on the first clip."""
+    import whisper_fw
+
+    options = whisper_fw.devices()
+    device, compute = options[0]
+    if device == "cuda":
+        missing = []
+        for name in CUDA_LIBRARIES:
+            try:
+                load_library(name)
+            except OSError:
+                missing.append(name)
+        if missing:
+            why = f"CUDA libraries missing: {', '.join(missing)}"
+            return f"{' '.join(options[1])} ({why})" if len(options) > 1 else f"cuda {compute} ({why}: it will fail)"
+    return f"{device} {compute}"
+
+
 def device(engine):
     if engine == "whisper":
-        import whisper_fw
-
-        return " ".join(whisper_fw.devices()[0])
+        return whisper_device()
     if engine == "parakeet":
         import parakeet_onnx
 

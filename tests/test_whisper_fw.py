@@ -173,3 +173,40 @@ def test_whisper_falls_back_when_cuda_fails_while_transcribing(tmp_path, stub, m
     run([wav(tmp_path / "a.wav"), "--model", "tiny", "-o", tmp_path], monkeypatch)
     assert [c[2:] for c in stub.calls if c[0] == "load"] == [("cuda", "float16"), ("cpu", "int8")]
     assert (tmp_path / "a.json").exists() and "falling back to CPU" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("missing, want", [
+    ((), "cuda float16"),
+    (("cublas64_12.dll",), "cpu int8 (CUDA libraries missing: cublas64_12.dll)"),
+])
+def test_device_report_names_the_device_whisper_really_uses(monkeypatch, missing, want):
+    """vidx setup said "cuda float16" whenever CTranslate2 saw a GPU, also when the CUDA libraries were missing and
+    every run fell back to the CPU. The probe now loads them as CTranslate2 will, and says what happens."""
+    import device
+
+    monkeypatch.delenv("VIDX_WHISPER_DEVICE", raising=False)
+    monkeypatch.setitem(sys.modules, "ctranslate2", types.SimpleNamespace(get_cuda_device_count=lambda: 1))
+
+    def load(name):
+        if name in missing:
+            raise OSError(f"{name}: not found")
+
+    monkeypatch.setattr(device, "load_library", load)
+    monkeypatch.setattr(device, "CUDA_LIBRARIES", ["cublas64_12.dll"])
+    assert device.device("whisper") == want
+
+
+def test_device_report_without_a_gpu_loads_no_cuda_library(monkeypatch):
+    import device
+
+    monkeypatch.delenv("VIDX_WHISPER_DEVICE", raising=False)
+    monkeypatch.setitem(sys.modules, "ctranslate2", types.SimpleNamespace(get_cuda_device_count=lambda: 0))
+    monkeypatch.setattr(device, "load_library", lambda name: pytest.fail("no GPU: nothing to load"))
+    assert device.device("whisper") == "cpu int8"
+
+
+def test_cuda_library_names_per_platform():
+    import device
+
+    assert device.cuda_libraries("win32") == ["cublas64_12.dll"]
+    assert device.cuda_libraries("linux") == ["libcublas.so.12"]

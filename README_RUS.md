@@ -403,7 +403,7 @@ Support/vidx`, `~/.local/share/vidx` (или `$XDG_DATA_HOME/vidx`) или `%LOC
 
 **Видеокарта NVIDIA на Linux и Windows.** faster-whisper нужен CUDA 12 с cuBLAS (Linux: CUDA toolkit
 или пакет `nvidia-cublas-cu12`; Windows: CUDA 12 toolkit или DLL cuBLAS в `PATH`); без них он пишет об
-этом и считает на CPU. torch и onnxruntime-gpu приносят свои библиотеки CUDA. `VIDX_WHISPER_DEVICE`,
+этом (и `vidx setup` в отчёте об устройствах) и считает на CPU, определение языка тоже. torch и onnxruntime-gpu приносят свои библиотеки CUDA. `VIDX_WHISPER_DEVICE`,
 `VIDX_ONNX_PROVIDER` и `VIDX_GIGAAM_DEVICE` задают устройство явно.
 
 Модели скачиваются у их авторов и распространяются под своими лицензиями; проверьте их, прежде чем
