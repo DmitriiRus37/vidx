@@ -14,11 +14,15 @@ from vidx.state import OutDir
 PY = [sys.executable, "-I", "-c"]
 
 
-def stamp_job(tmp_path, label, seconds=0.0, code=0, output=""):
+def stamp_job(tmp_path, label, seconds=0.0, code=0, output="", together=0):
     """A job that records its start/end in tmp_path/runs/<label> and exits with code. One file per job: jobs
-    running together cannot share one appended file on Windows, where appends are not atomic."""
+    running together cannot share one appended file on Windows, where appends are not atomic. together=N: after
+    its start it waits (up to 30 s) until N jobs have started, so the first N overlap however slowly Python starts
+    (a Windows runner can take longer than a short job)."""
     (tmp_path / "runs").mkdir(exist_ok=True)
-    script = (f"import time,sys; f=open(sys.argv[1],'a'); f.write('start {label} %f\\n' % time.time()); f.flush();"
+    script = (f"import os,time,sys; f=open(sys.argv[1],'a'); f.write('start {label} %f\\n' % time.time()); f.flush();"
+              f"d=os.path.dirname(sys.argv[1]); t=time.time()+30\n"
+              f"while len(os.listdir(d)) < {together} and time.time() < t: time.sleep(0.02)\n"
               f"time.sleep({seconds}); f.write('end {label} %f\\n' % time.time()); sys.exit({code})")
     return jobs.Job(label, output, "p", jobs.command([*PY, script, str(tmp_path / "runs" / label)]))
 
@@ -46,7 +50,7 @@ def out(tmp_path):
 
 @pytest.mark.parametrize("n", [1, 2, 3])
 def test_limit_and_order(tmp_path, out, n):
-    q = [stamp_job(tmp_path, f"job{i}", 0.6) for i in range(5)]
+    q = [stamp_job(tmp_path, f"job{i}", 0.3, together=n) for i in range(5)]
     jobs.run_queue(q, n, out)
     starts = [label for kind, label, _ in runs(tmp_path) if kind == "start"]
     if n == 1:
