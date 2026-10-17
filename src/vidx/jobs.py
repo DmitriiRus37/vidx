@@ -269,17 +269,19 @@ class Context:
         s.write(msg + "\n")
         s.flush()
 
-    def call(self, argv, stdout=None, drop=None, env=None):
-        """Run a program, wait, return its exit status. stdout: a file path to write its output to (else the
-        job's output); drop: stderr lines containing this text are not shown (Hugging Face "Fetching"). Its stderr
-        goes through vidx when filtered, or re-encoded for a non-UTF-8 terminal (reencodes)."""
+    def call(self, argv, stdout=None, drop=None, env=None, stderr=None):
+        """Run a program, wait, return its exit status. stdout / stderr: a file path to write that output to (else
+        the job's output); drop: stderr lines containing this text are not shown (Hugging Face "Fetching"). Its
+        stderr goes through vidx when filtered, or re-encoded for a non-UTF-8 terminal (reencodes)."""
         if _interrupted.is_set():
             return 130
-        out_file = open(stdout, "wb") if stdout else None  # noqa: SIM115 — closed below
-        try:
+        with contextlib.ExitStack() as files:
+            out_file = files.enter_context(open(stdout, "wb")) if stdout else None
+            err_file = files.enter_context(open(stderr, "wb")) if stderr else None
             target = self.stream
-            through = drop is not None or (target is None and reencodes(sys.stderr))
-            p = spawn(argv, stdout=out_file or target, stderr=subprocess.PIPE if through else target, env=env)
+            through = not err_file and (drop is not None or (target is None and reencodes(sys.stderr)))
+            p = spawn(argv, stdout=out_file or target, stderr=err_file or (subprocess.PIPE if through else target),
+                      env=env)
             pump = None
             if through:  # copied in a thread: the main thread must stay in wait()'s slices
                 pump = threading.Thread(target=relay, args=(p.stderr, target or sys.stderr, drop), daemon=True)
@@ -289,9 +291,6 @@ class Context:
                 pump.join(POLL_S)
             _forget(p)
             return rc
-        finally:
-            if out_file:
-                out_file.close()
 
 
 def log_name(label):

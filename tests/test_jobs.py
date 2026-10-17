@@ -142,6 +142,14 @@ def test_python_job_and_stdout_to_file(tmp_path, out):
     assert "frames: hello" in (tmp_path / "out" / "logs" / "py.log").read_text(encoding="utf-8")
 
 
+def test_stderr_to_a_file(tmp_path):
+    """call(stderr=path): the program's stderr is saved (ffmpeg's showinfo log for frames.py)."""
+    log_file = tmp_path / "err.log"
+    script = "import sys; sys.stderr.reconfigure(newline='\\n'); sys.stderr.write('n:1 pts:2\\n')"
+    assert jobs.Context().call([*PY, script], stderr=str(log_file)) == 0
+    assert log_file.read_bytes() == b"n:1 pts:2\n"
+
+
 def test_stderr_filter(tmp_path, out, capsys):
     script = "import sys; sys.stderr.write('Fetching 4 files\\nreal warning\\n')"
     jobs.run_queue([jobs.Job("lid", "", "", lambda ctx: ctx.call([*PY, script], drop="Fetching") == 0)], 1, out)

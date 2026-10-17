@@ -472,11 +472,8 @@ class Run:
                 vf = (f"select='isnan(prev_selected_t)+gt(scene\\,{o.scene})+gte(t-prev_selected_t\\,{o.every})',"
                       "showinfo")
                 showinfo = os.path.join(raw, "showinfo.log")
-                with open(showinfo, "wb") as log_file:
-                    p = jobs.spawn([self.ffmpeg, "-nostdin", "-hide_banner", "-y", "-i", self.src, "-an", "-vf", vf,
-                                    "-fps_mode", "vfr", "-q:v", "2", pattern], stdout=ctx.stream, stderr=log_file)
-                    rc = jobs.wait(p)
-                    jobs._forget(p)
+                rc = ctx.call([self.ffmpeg, "-nostdin", "-hide_banner", "-y", "-i", self.src, "-an", "-vf", vf,
+                               "-fps_mode", "vfr", "-q:v", "2", pattern], stderr=showinfo)
                 if rc != 0 or ctx.call([self.rt.helper_python, str(paths.LIB / "frames.py"), raw, showinfo,
                                         out.join("frames"), o.dedup, o.roi, o.crop]) != 0:
                     return False
