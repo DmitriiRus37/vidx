@@ -60,15 +60,16 @@ def test_windows_programs_are_not_taken_from_the_current_directory(tmp_path, mon
     the folder vidx runs in (a download folder) would run instead of the installed one. paths.which looks in PATH
     only, and the programs are started by that absolute path."""
     cwd, tools = tmp_path / "Downloads", tmp_path / "tools"
-    exe(cwd, "ffmpeg.EXE")
+    exe(cwd, "ffmpeg.exe")
     monkeypatch.chdir(cwd)
     env = {"PATH": os.pathsep.join(["", ".", str(tools)]), "PATHEXT": ".COM;.EXE"}
     assert paths.which("ffmpeg", "win32", env) is None  # only in the current directory: not found
-    want = exe(tools, "ffmpeg.EXE")
-    assert paths.which("ffmpeg", "win32", env) == want
-    assert paths.which("ffmpeg.exe", "win32", env) in (want, str(tools / "ffmpeg.exe"))  # with its extension
+    want = exe(tools, "ffmpeg.exe")
+    assert os.path.samefile(paths.which("ffmpeg", "win32", env), want)  # PATHEXT's .EXE, any case
+    assert os.path.samefile(paths.which("ffmpeg.exe", "win32", env), want)  # named with its extension
 
 
+@pytest.mark.skipif(os.name == "nt", reason="shutil.which on Windows wants a PATHEXT extension")
 def test_posix_which_is_shutils(tmp_path):
     tools = tmp_path / "bin"
     want = exe(tools, "ffmpeg")
