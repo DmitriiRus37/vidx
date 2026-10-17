@@ -423,8 +423,9 @@ def test_programs_start_only_through_jobs():
 
 
 def test_output_reads_both_streams_and_kills_a_program_past_its_timeout(tmp_path):
-    script = "import sys; sys.stdout.buffer.write(b'caf\\xc3\\xa9\\n'); sys.stderr.write('warn\\n'); sys.exit(3)"
-    assert jobs.output([*PY, script]) == (3, "café\n", "warn\n")
+    # bytes, not text: Windows would write CRLF, a Latin-1 locale (-I ignores PYTHONUTF8) Latin-1
+    script = "import sys; sys.stdout.buffer.write(b'caf\\xc3\\xa9\\n'); sys.stderr.buffer.write(b'w\\n'); sys.exit(3)"
+    assert jobs.output([*PY, script]) == (3, "café\n", "w\n")
     pid_file, before = tmp_path / "pid", set(jobs._live)
     t0 = time.monotonic()
     with pytest.raises(subprocess.TimeoutExpired):
