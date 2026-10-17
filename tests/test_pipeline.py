@@ -105,8 +105,8 @@ def test_the_glossary_prompt_goes_to_whisper_as_text(tmp_path, monkeypatch):
     gl.write_text("prompt: café\n", encoding="utf-8", newline="\n")
     assert run_in_process(tmp_path, monkeypatch, MEDIA / "ru_slides.mp4", "-l", "ru", "-o", "out", "-e", "whisper",
                           "--no-frames", "-g", gl) == 0
-    prompts = [argv[argv.index("--initial-prompt") + 1] for argv in seen if "--initial-prompt" in argv]
-    assert prompts == ["café"] and type(prompts[0]) is jobs.Text
+    prompts = [a for argv in seen for a in argv if str(a).startswith("--initial-prompt")]
+    assert prompts == ["--initial-prompt=café"] and type(prompts[0]) is jobs.Text
 
 
 def test_the_url_goes_to_ytdlp_as_text(tmp_path, monkeypatch):

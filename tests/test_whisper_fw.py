@@ -210,3 +210,12 @@ def test_cuda_library_names_per_platform():
 
     assert device.cuda_libraries("win32") == ["cublas64_12.dll"]
     assert device.cuda_libraries("linux") == ["libcublas.so.12"]
+
+
+def test_a_prompt_starting_with_a_dash(tmp_path, stub, monkeypatch):
+    """vidx passes the prompt as --initial-prompt=<prompt>, which argparse (here and in mlx_whisper) takes whole
+    even when the prompt starts with "-"; as a separate argument it would be read as an unknown option."""
+    run([wav(tmp_path / "a.wav"), "--model", "tiny", "-o", tmp_path, "--initial-prompt=-Kubernetes"], monkeypatch)
+    assert stub.calls[1][3]["initial_prompt"] == "-Kubernetes"
+    with pytest.raises(SystemExit):
+        run([wav(tmp_path / "a.wav"), "--model", "tiny", "--initial-prompt", "-Kubernetes"], monkeypatch)

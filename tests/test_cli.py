@@ -53,17 +53,24 @@ def test_option_change_reruns_only_affected_steps(tmp_path):
     assert run_vidx(FIXTURE, "-l", "ru", "-o", "out", "-g", gl, tmp_path=tmp_path).returncode == 0
     calls = fake_calls(tmp_path)[n:]
     assert sorted(c["engine"] for c in calls) == ["turbo", "whisper"]
-    assert all("Деплой" in c["args"] for c in calls)  # also in a Latin-1 locale (jobs.os_arg)
+    assert all(prompt_of(c["args"]) == "Деплой" for c in calls)  # also in a Latin-1 locale (jobs.os_arg)
 
 
-@pytest.mark.parametrize("word", ["Деплой", "café"])
+def prompt_of(args):
+    """The prompt whisper got: one argument, --initial-prompt=<prompt>."""
+    (prompt,) = [a.split("=", 1)[1] for a in args if a.startswith("--initial-prompt=")]
+    return prompt
+
+
+@pytest.mark.parametrize("word", ["Деплой", "café", "-Kubernetes"])
 def test_the_glossary_prompt_reaches_whisper_as_written(tmp_path, word):
-    """Also in a Latin-1 locale (ci latin-1): Cyrillic it cannot encode, é it can, and both must arrive as UTF-8."""
+    """Also in a Latin-1 locale (ci latin-1): Cyrillic it cannot encode, é it can, and both must arrive as UTF-8.
+    A prompt that starts with "-" is not taken for an option: it goes as --initial-prompt=<prompt>."""
     gl = tmp_path / "g.txt"
     gl.write_text(f"prompt: {word}\n", encoding="utf-8", newline="\n")
     r = run_vidx(FIXTURE, "-l", "ru", "-o", "out", "-e", "whisper", "--no-frames", "-g", gl, tmp_path=tmp_path)
     assert r.returncode == 0, r.stderr
-    assert [c["args"][c["args"].index("--initial-prompt") + 1] for c in fake_calls(tmp_path)] == [word]
+    assert [prompt_of(c["args"]) for c in fake_calls(tmp_path)] == [word]
 
 
 def test_interrupted_job_reruns(tmp_path):

@@ -330,7 +330,8 @@ class Run:
         args = ["--model", engine.model, "-o", self.out.join("asr"), "--output-name", stem, "-f", "json",
                 "--verbose", "False", "--condition-on-previous-text", "False", "--language", lang]
         if self.prompt:
-            args += ["--initial-prompt", jobs.Text(self.prompt)]  # text: UTF-8 in every locale
+            # one argument, so a prompt that starts with "-" is not read as an option; text: UTF-8 in every locale
+            args.append(jobs.Text(f"--initial-prompt={self.prompt}"))
         if clips:
             args += ["--clip-timestamps", clips]
         return self.engine_job(engine, self.audio, *args)
