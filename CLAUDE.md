@@ -38,8 +38,7 @@ Always `--isolated`: without it uv installs into `.venv`, which is vidx's own he
 - `tests/fakes/` — fake engines (`VIDX_FAKE_ENGINES=1` loads `hook.py`; `VIDX_FAKE_PLATFORM` simulates
   darwin/linux/win32); `tests/fixtures/`, `tests/golden/`.
 - `.github/workflows/` — `ci.yml` (3 OS × Python 3.14, fake engines, plus `latin-1`: the whole suite on
-  Linux in a generated `en_US.ISO-8859-1` locale with `PYTHONUTF8=0`), `smoke.yml` (real engines, small
-  models, Linux/Windows; nightly and manual from the default branch, fails if `vidx setup` names no device).
+  Linux in a generated `en_US.ISO-8859-1` locale with `PYTHONUTF8=0`).
 - `docs/plans/` — plans (AS IS / TO BE steps) and `2026-10-11-porting-analysis.md` (platform decisions,
   the Windows validation checklist).
 
