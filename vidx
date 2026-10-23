@@ -11,5 +11,5 @@ dir=$(cd "$(dirname "$self")" && pwd -P)
 export PYTHONPATH="$dir/src"
 # -P: the current directory never goes on sys.path; -s: no user site-packages
 if [ -x "$dir/.venv/bin/python" ]; then exec "$dir/.venv/bin/python" -P -s -m vidx "$@"; fi  # after vidx setup
-if command -v uv >/dev/null 2>&1; then exec uv run -q --no-project --python ">=3.11" python -P -s -m vidx "$@"; fi
-exec python3 -P -s -m vidx "$@"  # Python 3.11 or newer
+if command -v uv >/dev/null 2>&1; then exec uv run -q --no-project --python ">=3.14" python -P -s -m vidx "$@"; fi
+exec python3 -P -s -m vidx "$@"  # Python 3.14 or newer

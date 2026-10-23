@@ -342,7 +342,7 @@ whisper и turbo, так что качество будет самым низк�
 
 ## Установка
 
-Самому vidx нужны только Python 3.11+ и [uv](https://docs.astral.sh/uv/); окружения движков создаёт
+Самому vidx нужны только Python 3.14+ и [uv](https://docs.astral.sh/uv/); окружения движков создаёт
 `vidx setup`. Он проверяет ffmpeg (с ffprobe), deno (JS-рантайм, нужный yt-dlp для YouTube) и uv и
 печатает команду, которая поставит недостающее; сам пакетные менеджеры не запускает.
 
@@ -421,7 +421,7 @@ Hugging Face при каждом запуске (`HF_HUB_OFFLINE=1` её отк�
 
 ```bash
 uv run --isolated --group test pytest                       # юнит- и CLI-тесты, ~1,5 мин, без моделей и сети
-uv run --isolated --group test --python 3.11 pytest         # самый старый поддерживаемый Python
+uv run --isolated --group test --python 3.14 pytest         # самый старый поддерживаемый Python
 HF_HUB_OFFLINE=1 uv run --isolated --group test pytest -m real   # с настоящими моделями (после vidx setup)
 uvx ruff@0.16.10 check src/ tests/
 sh -n vidx                                                  # POSIX-запускалка
@@ -439,7 +439,7 @@ sh -n vidx                                                  # POSIX-запуск
 - **Фикстуры**: короткие клипы голосами macOS, отрисованные слайды и вывод движков в `tests/fixtures/`
   (до 400 КБ каждый).
 - **CI** ([.github/workflows](.github/workflows)): `ci.yml` запускает ruff и тесты на macOS, Linux и
-  Windows с Python 3.11 и 3.14, а также ещё раз тесты на Linux в локали Latin-1 с выключенным режимом
+  Windows с Python 3.14, а также ещё раз тесты на Linux в локали Latin-1 с выключенным режимом
   UTF-8 (`latin-1`); `smoke.yml` (по ночам и вручную) запускает `vidx setup` и настоящие
   движки с маленькими моделями на Linux и Windows.
 - Текстовые файлы — UTF-8 с LF на любой ОС: каждый `open()` указывает кодировку и перевод строки, а

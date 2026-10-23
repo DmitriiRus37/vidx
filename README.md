@@ -338,7 +338,7 @@ Developer Mode symlinks, NVIDIA and a non-ASCII user folder are still to check w
 
 ## Installation
 
-vidx itself needs only Python 3.11+ and [uv](https://docs.astral.sh/uv/); `vidx setup` makes the engines'
+vidx itself needs only Python 3.14+ and [uv](https://docs.astral.sh/uv/); `vidx setup` makes the engines'
 environments. It checks for ffmpeg (with ffprobe), deno (the JavaScript runtime yt-dlp needs for
 YouTube) and uv, and prints the command that installs a missing one; it never runs a package manager
 itself.
@@ -419,7 +419,7 @@ Tests are written first (TDD) and need no models by default:
 
 ```bash
 uv run --isolated --group test pytest                       # unit + CLI tests, ~1.5 min, no models or network
-uv run --isolated --group test --python 3.11 pytest         # the oldest supported Python
+uv run --isolated --group test --python 3.14 pytest         # the oldest supported Python
 HF_HUB_OFFLINE=1 uv run --isolated --group test pytest -m real   # real models (after vidx setup)
 uvx ruff@0.16.10 check src/ tests/
 sh -n vidx                                                  # the POSIX launcher
@@ -437,7 +437,7 @@ sh -n vidx                                                  # the POSIX launcher
 - **Fixtures**: short TTS clips, rendered slides and engine outputs in `tests/fixtures/` (under 400 KB
   each).
 - **CI** ([.github/workflows](.github/workflows)): `ci.yml` runs ruff and the test suite on macOS, Linux
-  and Windows with Python 3.11 and 3.14, and the suite once more on Linux in a Latin-1 locale with UTF-8
+  and Windows with Python 3.14, and the suite once more on Linux in a Latin-1 locale with UTF-8
   mode off (`latin-1`); `smoke.yml` (nightly, manual) runs `vidx setup` and the real
   engines with small models on Linux and Windows.
 - Text files are UTF-8 with LF on every OS: every `open()` names its encoding and newline, and every program

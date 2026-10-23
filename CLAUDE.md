@@ -8,7 +8,7 @@ by step; read it before changing behaviour. README_RUS.md is a full Russian tran
 
 ```bash
 uv run --isolated --group test pytest                            # unit + CLI tests (~1.5 min, no models, no network)
-uv run --isolated --group test --python 3.11 pytest              # oldest supported Python
+uv run --isolated --group test --python 3.14 pytest              # oldest supported Python
 HF_HUB_OFFLINE=1 uv run --isolated --group test pytest -m real   # real models (after `vidx setup`)
 uvx ruff@0.16.10 check src/ tests/
 sh -n vidx                                                       # the POSIX launcher must parse
@@ -37,7 +37,7 @@ Always `--isolated`: without it uv installs into `.venv`, which is vidx's own he
   (`ocr.swift`, `apple_asr.swift`, compiled by `vidx setup` into `<home>/bin`).
 - `tests/fakes/` — fake engines (`VIDX_FAKE_ENGINES=1` loads `hook.py`; `VIDX_FAKE_PLATFORM` simulates
   darwin/linux/win32); `tests/fixtures/`, `tests/golden/`.
-- `.github/workflows/` — `ci.yml` (3 OS × Python 3.11/3.14, fake engines, plus `latin-1`: the whole suite on
+- `.github/workflows/` — `ci.yml` (3 OS × Python 3.14, fake engines, plus `latin-1`: the whole suite on
   Linux in a generated `en_US.ISO-8859-1` locale with `PYTHONUTF8=0`), `smoke.yml` (real engines, small
   models, Linux/Windows; nightly and manual from the default branch, fails if `vidx setup` names no device).
 - `docs/plans/` — plans (AS IS / TO BE steps) and `2026-10-11-porting-analysis.md` (platform decisions,
@@ -68,8 +68,8 @@ Always `--isolated`: without it uv installs into `.venv`, which is vidx's own he
   `common.unix_stderr()` first, and data on stdout goes through `common.unix_stdout()` (UTF-8 + LF); vidx's
   own stdout/stderr are set up by `log.setup_streams`, and engine stderr is relayed by `jobs.relay` only to a
   non-UTF-8 terminal.
-- Python 3.11–3.14 for `src/` and tests (GigaAM venv is 3.13: onnxruntime 1.23 has no 3.14 build; the
-  Linux/Windows engine venvs are 3.13).
+- Python 3.14+ for `src/vidx/` and tests; the lib scripts also run in the engine venvs (GigaAM venv is 3.13:
+  onnxruntime 1.23 has no 3.14 build; the Linux/Windows engine venvs are 3.13).
 - Keep the security properties: no `-c` snippets in the orchestrator (JSON is read in-process; device probes
   and warm-ups are lib scripts run with `-I -X utf8`; the fake engine runs with `-I`; a test checks), lib
   scripts run by path (never the cwd on `sys.path`; the launcher uses `-P`), the `.vidx/` marker before writing

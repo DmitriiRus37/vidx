@@ -16,7 +16,7 @@ def py_vidx(*args):
 def test_console_script_declared():
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
     assert project["scripts"] == {"vidx": "vidx.cli:main"}
-    assert project["requires-python"] == ">=3.11"
+    assert project["requires-python"] == ">=3.14"
 
 
 def test_importable_from_src():
