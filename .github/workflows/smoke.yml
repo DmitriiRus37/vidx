@@ -50,7 +50,7 @@ jobs:
           grep "^devices: " setup.out
           if grep -q "^devices: .*: unknown" setup.out; then exit 1; fi
       - name: backend tests with real models
-        run: uv run --isolated --group test pytest -m real tests/test_real_engines.py -ra
+        run: uv run --isolated --group test pytest -m real --no-cov tests/test_real_engines.py -ra
       - name: a whole run (ru + en)
         shell: bash
         run: |

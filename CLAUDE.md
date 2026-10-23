@@ -7,9 +7,9 @@ by step; read it before changing behaviour. README_RUS.md is a full Russian tran
 ## Commands
 
 ```bash
-uv run --isolated --group test pytest                            # unit + CLI tests (~1.5 min, no models, no network)
+uv run --isolated --group test pytest                            # unit + CLI tests (~2.5 min, no models, no network; fails under 90 % coverage)
 uv run --isolated --group test --python 3.14 pytest              # oldest supported Python
-HF_HUB_OFFLINE=1 uv run --isolated --group test pytest -m real   # real models (after `vidx setup`)
+HF_HUB_OFFLINE=1 uv run --isolated --group test pytest -m real --no-cov   # real models (after `vidx setup`)
 uvx ruff@0.16.10 check src/ tests/
 sh -n vidx                                                       # the POSIX launcher must parse
 uvx --from actionlint-py actionlint .github/workflows/*.yml      # after changing CI

@@ -5,7 +5,7 @@ pyproject.toml's "test" group:
     uv run --isolated --group test pytest
     uv run --isolated --group test --python 3.14 pytest     # the oldest supported Python
 Run the real-model tests instead (macOS, models already downloaded by `vidx setup`, minutes):
-    HF_HUB_OFFLINE=1 uv run --isolated --group test pytest -m real
+    HF_HUB_OFFLINE=1 uv run --isolated --group test pytest -m real --no-cov
 --isolated keeps uv out of .venv: that is vidx's own helper venv (vosk, pillow, numpy), and a plain
 `uv run --group test` would install into it, or rebuild it for another --python.
 

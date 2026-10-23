@@ -63,3 +63,44 @@ def test_a_terminal_keeps_its_encoding_and_shows_what_it_cannot_as_a_question_ma
     utf8 = Stream("utf-8", "\n", tty=True)
     log.setup_streams([utf8])
     assert utf8.printed("bad name \udcff\n") == b"bad name ?\n"  # an undecodable file name (surrogateescape)
+
+
+def fake_console(monkeypatch, mode, set_ok=True):
+    """ctypes.windll.kernel32 and msvcrt of a Windows console whose mode is `mode` (None: not a console)."""
+    import ctypes
+    import sys
+    import types
+
+    calls = []
+
+    def get_mode(handle, ref):
+        if mode is None:
+            return 0
+        ref._obj.value = mode
+        return 1
+
+    def set_mode(handle, value):
+        calls.append((handle, value))
+        return 1 if set_ok else 0
+
+    kernel32 = types.SimpleNamespace(GetConsoleMode=get_mode, SetConsoleMode=set_mode)
+    monkeypatch.setattr(ctypes, "windll", types.SimpleNamespace(kernel32=kernel32), raising=False)
+    monkeypatch.setitem(sys.modules, "msvcrt", types.SimpleNamespace(get_osfhandle=lambda fd: 1000 + fd))
+    return calls
+
+
+class Fd(io.StringIO):
+    def fileno(self):
+        return 7
+
+
+def test_windows_vt_is_switched_on_keeping_the_console_mode(monkeypatch):
+    calls = fake_console(monkeypatch, mode=0x0003)
+    assert log.enable_windows_vt(Fd())
+    assert calls == [(1007, 0x0007)]  # ENABLE_VIRTUAL_TERMINAL_PROCESSING added to what was there
+
+
+def test_windows_vt_refused(monkeypatch):
+    assert not fake_console(monkeypatch, mode=None) and not log.enable_windows_vt(Fd())  # not a console
+    fake_console(monkeypatch, mode=0x0003, set_ok=False)
+    assert not log.enable_windows_vt(Fd())  # an old conhost without VT support

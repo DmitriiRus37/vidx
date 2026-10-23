@@ -24,7 +24,10 @@ packages = ["src/vidx"]
 
 [dependency-groups]
 # pinned like the helper venv (vidx HELPER_PKGS), so the tests run what vidx runs
-test = ["pytest==9.1.1", "numpy==2.5.4", "pillow==13.0.0", "markdown-it-py==4.2.0", "psutil==7.2.2"]
+test = [
+    "pytest==9.1.1", "pytest-cov==7.1.0", "coverage==7.17.0",
+    "numpy==2.5.4", "pillow==13.0.0", "markdown-it-py==4.2.0", "psutil==7.2.2",
+]
 
 [tool.ruff]
 line-length = 120
@@ -35,5 +38,25 @@ select = ["E", "F", "W", "I", "B", "UP", "BLE", "SIM"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-m 'not real'"
+# --cov: line + branch coverage of src/vidx (the orchestrator and the lib scripts, child processes included);
+# below 90 % the run fails. The real-model runs measure only a slice: they pass --no-cov.
+addopts = "-m 'not real' --cov --cov-report=term"
 markers = ["real: needs the real models (cached by `vidx setup`); run with -m real"]
+
+[tool.coverage.run]
+# vidx runs itself (`python -m vidx`) and its lib scripts as child processes: measure those too
+patch = ["subprocess"]
+branch = true
+source = ["src/vidx"]
+relative_files = true
+
+[tool.coverage.paths]
+source = ["src/vidx", "*/site-packages/vidx"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 90
+# Real-model backends only: these need the downloaded models (mlx-whisper on Apple silicon). The tests fake
+# lid.load; the real tests (-m real) run them.
+exclude_also = ["def load_mlx\\("]  # lib/lid.py: mlx-whisper language ID

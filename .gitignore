@@ -24,3 +24,9 @@ glossaries/*
 .vscode/
 .ruff_cache/
 .pytest_cache/
+
+# coverage data and reports
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
