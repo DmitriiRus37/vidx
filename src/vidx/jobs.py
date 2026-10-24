@@ -385,6 +385,9 @@ def run_job(job, out, background):
 
 def run_queue(queue, n, out):
     """Run the jobs in queue order, n at a time (n > 1: output to logs/<job>.log)."""
+    if n > len(queue) > 0:  # a slot without a job does nothing: say so instead of claiming n at a time
+        log(f"-j {n} lowered to {len(queue)}: only {len(queue)} job{'s' if len(queue) > 1 else ''} to run")
+        n = len(queue)
     if n <= 1:
         for job in queue:
             run_job(job, out, background=False)

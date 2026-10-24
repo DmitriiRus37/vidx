@@ -60,6 +60,15 @@ def test_limit_and_order(tmp_path, out, n):
     assert peak(tmp_path) == n
 
 
+def test_more_slots_than_jobs_are_lowered_with_a_note(tmp_path, out, capsys):
+    q = [stamp_job(tmp_path, f"job{i}", 0.3, together=3) for i in range(3)]
+    jobs.run_queue(q, 100, out)
+    assert peak(tmp_path) == 3
+    err = capsys.readouterr().err
+    assert "-j 100 lowered to 3: only 3 jobs to run" in err
+    assert "==> running 3 jobs, 3 at a time" in err
+
+
 def test_failure_does_not_stop_the_rest(tmp_path, out, capsys):
     q = [stamp_job(tmp_path, "a"), stamp_job(tmp_path, "bad", code=1), stamp_job(tmp_path, "c")]
     jobs.run_queue(q, 2, out)
