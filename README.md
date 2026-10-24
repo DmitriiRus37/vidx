@@ -148,14 +148,15 @@ Apple GPU (MPS), else on the CPU (`VIDX_GIGAAM_DEVICE` forces one).
 **Vosk** ([vosk_run.py](src/vidx/lib/vosk_run.py)) streams the audio in 0.5 s pieces and stores a segment
 each time Kaldi closes an utterance.
 
-**Parallel runs.** `-j N` runs up to N jobs at a time (default 1, one after another). The queue is
-ordered so GPU and CPU work interleave: whisper (GPU) · vosk (CPU) · frames + OCR (CPU) · gigaam ·
-parakeet · apple · turbo. So `-j 2` already overlaps the slowest GPU and CPU jobs, and `-j 3` adds
-the frames. With `-j > 1` each job's output goes to `logs/<job>.log` and the terminal only shows
-start / done / failure (with the last lines of the log). In mixed runs parakeet and the region split
-run before the queue, because GigaAM and whisper need the regions. Ctrl-C (Ctrl-Break on Windows), closing
-the terminal (macOS, Linux) or an unexpected error stops every running job together with the processes it
-started; a second Ctrl-C while vidx stops them is ignored.
+**Parallel runs.** `-j N` runs up to N jobs at a time (default 1, one after another). The queue is ordered
+so GPU and CPU work interleave: whisper (GPU) · vosk (CPU) · frames + OCR (CPU) · gigaam · parakeet ·
+apple · turbo. So `-j 2` already overlaps the slowest GPU and CPU jobs, and `-j 3` adds the frames. An N
+above the number of queued jobs (at most 7) is lowered to it, with a note. With `-j > 1` each job's output
+goes to `logs/<job>.log` and the terminal only shows start / done / failure (with the last lines of the
+log). In mixed runs parakeet and the region split run before the queue, because GigaAM and whisper need
+the regions. Ctrl-C (Ctrl-Break on Windows), closing the terminal (macOS, Linux) or an unexpected error
+stops every running job together with the processes it started; a second Ctrl-C while vidx stops them is
+ignored.
 
 A failed job does not stop the run: the rest is merged, the failures are listed at the end and vidx
 exits with status 3.

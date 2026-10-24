@@ -71,7 +71,8 @@ SPEECH
   -j, --jobs N           run N jobs at once (default 1). Queue order:
                            whisper (GPU) · vosk (CPU) · frames+OCR (CPU) ·
                            gigaam · parakeet · apple · turbo
-                         so -j 2..3 keeps both GPU and CPU busy. Job output
+                         so -j 2..3 keeps both GPU and CPU busy. N above the
+                         number of jobs is lowered to it (with a note). Job output
                          then goes to logs/<job>.log. RAM: whisper ~4 GB,
                          vosk ru ~6 GB, others 1-3 GB; on a 16 GB ${MACHINE_SHORT} use -j 2
   -g, --glossary FILE    domain terms, see GLOSSARY below
