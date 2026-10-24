@@ -32,6 +32,7 @@ class RunOptions:
     scene: str = "0.3"
     every: str = "10"
     dedup: str = "6"
+    all_frames: bool = False  # every frame through mpdecimate instead of --scene/--every
     roi: str = "1"
     crop: str = "0"
     maxh: str = "1080"
@@ -140,6 +141,8 @@ def parse_run(args, env=None):
             takes_value = False
             if a == "--crop":
                 o.crop = "1"
+            elif a == "--all-frames":
+                o.all_frames = True
             elif a == "--meet":
                 o.roi, o.crop = "0.75", "1"
             elif a == "--no-asr":

@@ -2,6 +2,7 @@
 (Windows), a % in the temp dir, long OCR command lines."""
 import json
 import os
+import subprocess
 import tempfile
 import zipfile
 
@@ -85,6 +86,25 @@ def test_percent_in_the_temp_dir(tmp_path, monkeypatch):
     frames = json.loads((tmp_path / "o%2d" / "frames" / "frames.json").read_text(encoding="utf-8"))
     assert frames and all(f["file"].endswith(".jpg") for f in frames)
 
+
+def one_flash_video(path):
+    """4 s of white at 25 fps; frame 50 (t = 2 s) alone shows a small black box: a scene change far below
+    --scene 0.3, but more than 1 % of the dedup thumbnail."""
+    box = "drawbox=x=100:y=100:w=300:h=100:color=black:t=fill:enable='eq(n,50)'"
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i", "color=white:s=1280x720:r=25:d=4",
+                    "-vf", box, "-c:v", "mpeg4", "-q:v", "2", str(path)], check=True)
+    return path
+
+
+@needs_ffmpeg
+@pytest.mark.parametrize("extra, times", [((), [0.0]), (("--all-frames",), [0.0, 2.0])])
+def test_all_frames_catches_a_single_frame(tmp_path, monkeypatch, extra, times):
+    """--all-frames looks at every frame: the one-frame box survives dedup, the white after it does not."""
+    video = one_flash_video(tmp_path / "flash.mp4")
+    args = (video, "-o", "out", "--no-asr", "--no-ocr", "--no-subs", *extra)
+    assert run_in_process(tmp_path, monkeypatch, *args) == 0
+    frames = json.loads((tmp_path / "out" / "frames" / "frames.json").read_text(encoding="utf-8"))
+    assert [f["t"] for f in frames] == times
 
 
 def spy_spawn(monkeypatch):
