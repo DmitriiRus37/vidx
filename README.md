@@ -171,6 +171,11 @@ macOS, [ocr_rapid.py](src/vidx/lib/ocr_rapid.py) elsewhere):
 1. **Capture**: a single ffmpeg pass keeps a frame when the scene changes by more than `--scene`
    (0.3) or when `--every` seconds (10) passed since the last kept frame. ffmpeg's `showinfo`
    gives each frame's timestamp. The raw frames go to a temporary folder.
+   `--all-frames` replaces this with every frame of the video, for pictures shown for a single frame
+   (1/25 s) that the scene test misses when they cover a small part of the screen. ffmpeg's
+   `mpdecimate` drops each frame that looks like the last kept one, so a static picture is not
+   written 25 times a second; the rest goes through the dedup below. `--scene` and `--every` are
+   ignored; it decodes and compares every frame, so a long video takes longer.
 2. **Dedup**: each frame becomes a 240×135 grey thumbnail and is compared with the last 6 kept
    frames, so a slide that comes back later is not kept twice. It is a duplicate when the mean pixel
    difference is below `--dedup` (6) **and** fewer than 1 % of pixels changed by more than 25

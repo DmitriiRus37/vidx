@@ -467,16 +467,22 @@ class Run:
     def frames_and_ocr(self, ctx):
         o, out = self.o, self.out
         fp = f"scene={o.scene} every={o.every} dedup={o.dedup} roi={o.roi} crop={o.crop}"
+        if o.all_frames:  # appended only here: the stamps of earlier runs stay valid
+            fp += " all-frames"
         frames_json = out.join("frames", "frames.json")
         if out.fresh(frames_json, fp):
-            ctx.say(f"frames: scene change > {o.scene} or every {o.every}s")
+            ctx.say("frames: every frame, identical ones dropped" if o.all_frames
+                    else f"frames: scene change > {o.scene} or every {o.every}s")
             shutil.rmtree(out.join("frames"), ignore_errors=True)
             shutil.rmtree(out.join("ocr"), ignore_errors=True)
             os.makedirs(out.join("frames"))
             with jobs.temp_dir() as raw:  # outside OUT; % escaped too: ffmpeg's %06d pattern
                 pattern = os.path.join(raw.replace("%", "%%"), "%06d.jpg")
-                vf = (f"select='isnan(prev_selected_t)+gt(scene\\,{o.scene})+gte(t-prev_selected_t\\,{o.every})',"
-                      "showinfo")
+                if o.all_frames:  # mpdecimate drops only frames like the last kept one: no disk full of copies
+                    vf = "mpdecimate,showinfo"
+                else:
+                    vf = (f"select='isnan(prev_selected_t)+gt(scene\\,{o.scene})+gte(t-prev_selected_t\\,{o.every})',"
+                          "showinfo")
                 showinfo = os.path.join(raw, "showinfo.log")
                 rc = ctx.call([self.ffmpeg, "-nostdin", "-hide_banner", "-y", "-i", self.src, "-an", "-vf", vf,
                                "-fps_mode", "vfr", "-q:v", "2", pattern], stderr=showinfo)

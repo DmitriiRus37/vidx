@@ -52,6 +52,7 @@ def test_defaults():
     assert (o.scene, o.every, o.dedup, o.roi, o.crop, o.maxh) == ("0.3", "10", "6", "1", "0", "1080")
     assert (o.force, o.jobs, o.sub_langs, o.cuts) == (False, 1, "", [])
     assert (o.do_asr, o.do_frames, o.do_ocr, o.do_subs) == (True, True, True, True)
+    assert o.all_frames is False
 
 
 def test_values_taken_as_given():
@@ -59,6 +60,10 @@ def test_values_taken_as_given():
     assert o.out == "-l"  # like bash: the next argument is the value, whatever it looks like
     assert (o.roi, o.crop, o.scene, o.jobs) == ("0.75", "1", "0.25", 3)
     assert (o.force, o.do_ocr, o.do_subs) == (True, False, False)
+
+
+def test_all_frames():
+    assert parse(AV, "--all-frames").all_frames is True
 
 
 def test_later_option_wins():

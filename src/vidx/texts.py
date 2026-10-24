@@ -91,6 +91,8 @@ ${ENGINE_TABLE}  Other models: VIDX_MODEL_WHISPER, VIDX_MODEL_TURBO (also langua
 PICTURES
       --scene X          ffmpeg scene-change threshold 0..1 (default 0.3)
       --every SEC        also grab a frame after SEC s without one (default 10)
+      --all-frames       look at every frame instead (a frame shown for 1/25 s);
+                         ffmpeg drops repeats, then --dedup; slower
       --dedup X          mean pixel diff on a 240x135 grey thumbnail below which
                          a frame is a duplicate (default 6), unless >1 % of the
                          pixels changed (small text on white slides)
